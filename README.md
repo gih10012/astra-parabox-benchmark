@@ -71,7 +71,7 @@ node dist/src/cli.js service install
 node dist/src/cli.js service status
 ```
 
-The service starts with the user systemd manager, waits for the niri graphical session, and watches the single active run. A rebooted run resumes automatically after the desktop is available. If Codex reports a quota/rate-limit error, the default retry time is five hours later; customize it with `--quota-wait-hours`.
+The service starts with the user systemd manager, waits for the niri graphical session, and watches the single active run. A rebooted run resumes automatically after the desktop is available. If Codex reports a quota/rate-limit error, the watchdog uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`.
 
 For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `yes` (enable linger once if needed). The watchdog can start before login, but launching and recording the game still waits until the niri desktop session exists.
 
@@ -86,7 +86,7 @@ Defaults:
 - native web search and network browsers: disabled
 - Shell: enabled in an empty writable workspace, with outbound network disabled
 - skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
-- quota retry: automatic after 5 hours
+- quota retry: reported reset time + 1 minute; 5-hour fallback
 - crash checkpoint: cumulative time, tokens, thread ID, progress, and game save every 5 seconds
 
 Useful variants:

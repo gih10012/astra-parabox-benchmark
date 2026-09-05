@@ -30,7 +30,7 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 - Exactly one active run is registered under `.arena/active-run.json`.
 - `checkpoint.json` and the latest challenge save are atomically replaced and synced every five seconds while the model is active.
 - The checkpoint includes the Codex thread ID, attempt number, cumulative active time, cumulative token sample, referee progress, retry time, and recording-part list. It never contains the arena control token or Codex credentials.
-- Quota and rate-limit errors enter `waiting_quota`; the default retry is five hours. If the retry is still limited, another five-hour window is scheduled.
+- Quota and rate-limit errors enter `waiting_quota`. The retry uses Codex's machine-readable `resets_at` for the exhausted 5-hour or weekly window, plus a one-minute margin. If multiple windows are exhausted, it uses the later reset. Five hours is the fallback only when no valid future timestamp is available.
 - A stale `running` checkpoint after process death or reboot becomes immediately eligible for watchdog recovery once niri is available.
 - `SIGINT` creates a manual `paused` state. `SIGTERM` creates an immediately retryable state for shutdown/service restart.
 - The original player saves remain in `save-backup/` throughout an incomplete run. A completed challenge archives the final challenge save and restores the originals.

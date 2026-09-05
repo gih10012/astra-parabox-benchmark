@@ -64,6 +64,37 @@ export function extractTokenUsage(event: unknown): {
   return null;
 }
 
+export function extractQuotaResetAt(event: unknown): number | null {
+  const root = object(event);
+  const payload = object(root?.payload);
+  const rateLimits = object(payload?.rate_limits ?? root?.rate_limits);
+  if (!rateLimits) return null;
+
+  const reachedType =
+    typeof rateLimits.rate_limit_reached_type === "string"
+      ? rateLimits.rate_limit_reached_type.toLowerCase()
+      : "";
+  const windows = ["primary", "secondary", "individual_limit"]
+    .map((name) => {
+      const window = object(rateLimits[name]);
+      if (!window) return null;
+      const resetsAt = nonNegative(window.resets_at ?? window.resetsAt);
+      const usedPercent = nonNegative(
+        window.used_percent ?? window.usedPercent,
+      );
+      return resetsAt > 0 ? { name, resetsAt, usedPercent } : null;
+    })
+    .filter((window) => window !== null);
+
+  const explicitlyReached = windows.filter(({ name }) =>
+    rateLimitTypeMatchesWindow(reachedType, name),
+  );
+  const exhausted = windows.filter(({ usedPercent }) => usedPercent >= 100);
+  const applicable = [...explicitlyReached, ...exhausted];
+  if (applicable.length === 0) return null;
+  return Math.max(...applicable.map(({ resetsAt }) => resetsAt)) * 1_000;
+}
+
 export function mergeUsage(current: TokenUsage, next: TokenUsage): TokenUsage {
   if (next.totalTokens >= current.totalTokens) return next;
   return current;
@@ -71,6 +102,14 @@ export function mergeUsage(current: TokenUsage, next: TokenUsage): TokenUsage {
 
 export function emptyTokenUsage(): TokenUsage {
   return zeroUsage();
+}
+
+function rateLimitTypeMatchesWindow(type: string, name: string): boolean {
+  if (!type) return false;
+  if (type.includes(name)) return true;
+  if (name === "primary") return /(?:five|5)[_-]?(?:hour|h)/.test(type);
+  if (name === "secondary") return type.includes("week");
+  return name === "individual_limit" && type.includes("individual");
 }
 
 export function publicTranscriptEvent(event: unknown): unknown | null {

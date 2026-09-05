@@ -19,6 +19,7 @@ import {
 } from "./codex-home.js";
 import {
   emptyTokenUsage,
+  extractQuotaResetAt,
   extractTokenUsage,
   publicTranscriptEvent,
 } from "./codex-events.js";
@@ -47,6 +48,7 @@ export const RESUME_PROMPT =
   "Continue the same task from the current game state. Do not search or browse the internet.";
 
 const DEFAULT_QUOTA_WAIT_MS = 5 * 60 * 60 * 1_000;
+const QUOTA_RESET_GRACE_MS = 60_000;
 
 export interface RunOptions {
   rootDirectory: string;
@@ -256,6 +258,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   let checkpointBusy = false;
   let restored = false;
   let quotaExhausted = false;
+  let quotaResetAtMs: number | null = null;
   let exitDescription = "Codex exited before completion";
   let requestedStop: "pause" | "restart" | null = null;
   let outcomePhase: RunPhase = "waiting_retry";
@@ -264,6 +267,12 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
 
   const inspectDiagnostic = (text: string) => {
     if (isQuotaError(text)) quotaExhausted = true;
+  };
+  const inspectEvent = (event: unknown) => {
+    const resetAt = extractQuotaResetAt(event);
+    if (resetAt !== null && resetAt > Date.now()) {
+      quotaResetAtMs = Math.max(quotaResetAtMs ?? 0, resetAt);
+    }
   };
   const stopCodex = () => {
     if (codex?.exitCode === null) codex.kill("SIGINT");
@@ -443,6 +452,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
           } catch {
             return;
           }
+          inspectEvent(event);
           state.ingestCodexEvent(event);
           const visible = publicTranscriptEvent(event);
           if (visible) controller.publishTranscript(visible);
@@ -459,6 +469,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
             const tailer = new RolloutTailer(root.thread_id, sessionsRoot);
             tailers.add(tailer);
             const tailerTask = tailer.follow(async (rolloutEvent, raw) => {
+              inspectEvent(rolloutEvent);
               state.ingestCodexEvent(rolloutEvent);
               if (extractTokenUsage(rolloutEvent)) {
                 await audit.appendRaw("codex-usage.jsonl", raw);
@@ -513,7 +524,11 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       reason = "Interrupted by shutdown or service restart";
     } else if (quotaExhausted) {
       outcomePhase = "waiting_quota";
-      retryAt = new Date(Date.now() + prior.options.quotaWaitMs).toISOString();
+      retryAt = quotaRetryAt(
+        Date.now(),
+        prior.options.quotaWaitMs,
+        quotaResetAtMs,
+      );
       reason = exitDescription;
     } else {
       outcomePhase = "waiting_retry";
@@ -793,6 +808,18 @@ export function isQuotaError(text: string): boolean {
   return /(?:\b429\b|rate[_ -]?limit|usage limit|quota|too many requests|insufficient_quota|limit has been reached)/i.test(
     text,
   );
+}
+
+export function quotaRetryAt(
+  nowMs: number,
+  fallbackWaitMs: number,
+  reportedResetAtMs: number | null,
+): string {
+  const retryMs =
+    reportedResetAtMs !== null && reportedResetAtMs > nowMs
+      ? reportedResetAtMs + QUOTA_RESET_GRACE_MS
+      : nowMs + fallbackWaitMs;
+  return new Date(retryMs).toISOString();
 }
 
 function retryDelayMs(attempt: number): number {

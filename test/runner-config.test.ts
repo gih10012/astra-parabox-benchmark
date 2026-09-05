@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { extractQuotaResetAt } from "../src/codex-events.js";
 import { codexEnvironment } from "../src/codex-home.js";
 import {
   codexArguments,
   isQuotaError,
   NEUTRAL_PROMPT,
+  quotaRetryAt,
   RESUME_PROMPT,
 } from "../src/runner.js";
 
@@ -67,4 +69,63 @@ test("recognizes common quota exhaustion errors without matching generic failure
   assert.equal(isQuotaError("unexpected status 429 Too Many Requests"), true);
   assert.equal(isQuotaError("You've hit your usage limit"), true);
   assert.equal(isQuotaError("connection reset by peer"), false);
+});
+
+test("uses the exhausted Codex window reset with a one-minute grace period", () => {
+  const resetAt = extractQuotaResetAt({
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      rate_limits: {
+        primary: {
+          used_percent: 99,
+          window_minutes: 300,
+          resets_at: 1_800_000_000,
+        },
+        secondary: {
+          used_percent: 94,
+          window_minutes: 10_080,
+          resets_at: 1_800_500_000,
+        },
+        rate_limit_reached_type: "primary",
+      },
+    },
+  });
+  assert.equal(resetAt, 1_800_000_000_000);
+  assert.equal(
+    quotaRetryAt(1_799_999_000_000, 18_000_000, resetAt),
+    "2027-01-15T08:01:00.000Z",
+  );
+});
+
+test("waits for the later reset when multiple quota windows are exhausted", () => {
+  const resetAt = extractQuotaResetAt({
+    type: "event_msg",
+    payload: {
+      rate_limits: {
+        primary: { used_percent: 100, resets_at: 1_800_000_000 },
+        secondary: { used_percent: 100, resets_at: 1_800_500_000 },
+        rate_limit_reached_type: "primary",
+      },
+    },
+  });
+  assert.equal(resetAt, 1_800_500_000_000);
+  assert.equal(
+    extractQuotaResetAt({
+      payload: {
+        rate_limits: {
+          primary: { used_percent: 71, resets_at: 1_800_000_000 },
+          secondary: { used_percent: 94, resets_at: 1_800_500_000 },
+        },
+      },
+    }),
+    null,
+  );
+});
+
+test("falls back to the configured wait when Codex provides no reset", () => {
+  assert.equal(
+    quotaRetryAt(1_800_000_000_000, 18_000_000, null),
+    "2027-01-15T13:00:00.000Z",
+  );
 });
