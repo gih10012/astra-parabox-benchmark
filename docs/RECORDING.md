@@ -7,7 +7,7 @@
 3. Run `npm run doctor` and require every required check to pass.
 4. Run `node dist/src/cli.js smoke-model`; do not start a formal run unless it succeeds.
 5. Run `npm run demo` once to verify the director dashboard fits the intended crop.
-6. Ensure enough free space for a long 30 FPS Matroska recording and connect stable power/network. The model API needs network; the model itself has no search or network-capable tool.
+6. Ensure enough free space for a long 30 FPS Matroska recording and connect stable power/network. The model API needs network. Native search/browser access and shell network are disabled; any alternate external-information lookup invalidates the run.
 
 ## During the take
 

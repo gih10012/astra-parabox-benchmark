@@ -2,6 +2,11 @@ import { access, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  codexEnvironment,
+  displayCodexHome,
+  resolveCodexHome,
+} from "./codex-home.js";
 import { runCommand } from "./command.js";
 import { parseParaboxSave } from "./save-parser.js";
 import { TARGET_LEVELS } from "./types.js";
@@ -61,8 +66,10 @@ async function fileCheck(
   }
 }
 
-export async function runDoctor(): Promise<DoctorCheck[]> {
+export async function runDoctor(options: { codexHome?: string } = {}): Promise<DoctorCheck[]> {
   const paths = defaultGamePaths();
+  const codexHome = await resolveCodexHome(options.codexHome);
+  const codexEnv = codexEnvironment(codexHome);
   const checks = await Promise.all([
     commandCheck("node"),
     commandCheck("codex"),
@@ -77,7 +84,22 @@ export async function runDoctor(): Promise<DoctorCheck[]> {
     fileCheck("Patrick's Parabox save directory", paths.saveDirectory),
   ]);
 
-  const modelResult = await runCommand("codex", ["debug", "models", "--bundled"]);
+  const loginResult = await runCommand("codex", ["login", "status"], {
+    env: codexEnv,
+  });
+  checks.push({
+    name: "Codex credentials",
+    ok: loginResult.code === 0,
+    detail:
+      loginResult.code === 0
+        ? `authenticated via ${displayCodexHome(codexHome)}`
+        : `not authenticated via ${displayCodexHome(codexHome)}`,
+    required: true,
+  });
+
+  const modelResult = await runCommand("codex", ["debug", "models", "--bundled"], {
+    env: codexEnv,
+  });
   let modelOk = false;
   if (modelResult.code === 0) {
     try {

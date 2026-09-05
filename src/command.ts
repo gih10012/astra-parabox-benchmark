@@ -9,12 +9,12 @@ export interface CommandResult {
 export async function runCommand(
   command: string,
   args: string[],
-  options: { timeoutMs?: number; cwd?: string } = {},
+  options: { timeoutMs?: number; cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<CommandResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
@@ -43,7 +43,7 @@ export async function runCommand(
 export async function expectCommand(
   command: string,
   args: string[],
-  options: { timeoutMs?: number; cwd?: string } = {},
+  options: { timeoutMs?: number; cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<Buffer> {
   const result = await runCommand(command, args, options);
   if (result.code !== 0) {

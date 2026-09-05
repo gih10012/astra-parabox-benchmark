@@ -19,7 +19,10 @@ const rootDirectory = path.resolve(
 const [command = "help", ...args] = process.argv.slice(2);
 
 if (command === "doctor") {
-  const checks = await runDoctor();
+  const requestedCodexHome = optionalPathArg(args, "--codex-home");
+  const checks = await runDoctor(
+    requestedCodexHome ? { codexHome: requestedCodexHome } : {},
+  );
   if (args.includes("--json")) console.log(JSON.stringify(checks, null, 2));
   else {
     for (const check of checks) {
@@ -114,6 +117,7 @@ if (command === "doctor") {
   if (!["low", "medium", "high", "xhigh", "max"].includes(reasoning)) {
     throw new Error("--reasoning must be low, medium, high, xhigh, or max");
   }
+  const requestedCodexHome = optionalPathArg(args, "--codex-home");
   const directory = await runChallenge({
     rootDirectory,
     port: numberArg(args, "--port", 4317),
@@ -121,13 +125,17 @@ if (command === "doctor") {
     record: !args.includes("--no-record"),
     openDashboard: !args.includes("--no-browser"),
     isolateSaves: !args.includes("--keep-saves"),
+    ...(requestedCodexHome ? { codexHome: requestedCodexHome } : {}),
     ...(outputValue
       ? { output: path.resolve(outputValue) }
       : {}),
   });
   console.log(`Run artifacts: ${directory}`);
 } else if (command === "smoke-model") {
-  const result = await runModelSmoke(rootDirectory);
+  const result = await runModelSmoke(
+    rootDirectory,
+    optionalPathArg(args, "--codex-home"),
+  );
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
 } else if (command === "restore") {
@@ -139,10 +147,10 @@ if (command === "doctor") {
   console.log(`Astra × Parabox Arena
 
 Usage:
-  parabox-arena doctor [--json]
+  parabox-arena doctor [--json] [--codex-home PATH]
   parabox-arena demo [--port 4317] [--duration SECONDS] [--no-browser]
-  parabox-arena smoke-model
-  parabox-arena run [--reasoning high] [--no-record] [--no-browser] [--keep-saves]
+  parabox-arena smoke-model [--codex-home PATH]
+  parabox-arena run [--reasoning high] [--codex-home PATH] [--no-record] [--no-browser] [--keep-saves]
   parabox-arena restore <run/save-recovery.json>
 `);
 }
@@ -159,6 +167,13 @@ function stringArg(args: string[], name: string, fallback: string): string {
   const index = args.indexOf(name);
   const value = index >= 0 ? args[index + 1] : undefined;
   return value ?? fallback;
+}
+
+function optionalPathArg(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  const value = index >= 0 ? args[index + 1] : undefined;
+  if (index >= 0 && !value) throw new Error(`${name} requires a path`);
+  return value ? path.resolve(value) : undefined;
 }
 
 function mockSave(total: number, completed: number): string {

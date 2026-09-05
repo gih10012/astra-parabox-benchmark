@@ -14,19 +14,23 @@ import path from "node:path";
 import readline from "node:readline";
 import { AuditLog, createRunId } from "./audit-log.js";
 import { ChallengeState } from "./challenge-state.js";
+import {
+  codexEnvironment,
+  displayCodexHome,
+  resolveCodexHome,
+} from "./codex-home.js";
 import { extractTokenUsage, publicTranscriptEvent } from "./codex-events.js";
 import { runCommand } from "./command.js";
 import { ArenaController } from "./controller.js";
 import { defaultGamePaths } from "./doctor.js";
 import { NiriGameAdapter } from "./game-adapter.js";
-import { loadProviderConfig } from "./provider-config.js";
 import { RolloutTailer } from "./rollout-tailer.js";
 import { SaveGuard } from "./save-guard.js";
 import { parseParaboxSave } from "./save-parser.js";
 import { TARGET_LEVELS, type LevelProgress } from "./types.js";
 
 export const NEUTRAL_PROMPT =
-  "Complete all 364 official levels in Patrick's Parabox. Interact only through the provided tools.";
+  "Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.";
 
 export interface RunOptions {
   rootDirectory: string;
@@ -36,6 +40,7 @@ export interface RunOptions {
   openDashboard?: boolean;
   isolateSaves?: boolean;
   output?: string;
+  codexHome?: string;
 }
 
 export async function runChallenge(options: RunOptions): Promise<string> {
@@ -61,6 +66,11 @@ export async function runChallenge(options: RunOptions): Promise<string> {
   });
   const saveGuard = new SaveGuard(paths.saveDirectory, runDirectory);
   const reasoningEffort = options.reasoningEffort ?? "high";
+  const codexHome = await resolveCodexHome(options.codexHome);
+  const sessionsRoot = path.join(
+    codexHome ?? path.join(os.homedir(), ".codex"),
+    "sessions",
+  );
   const runConfig = {
     runId,
     createdAt: new Date().toISOString(),
@@ -71,7 +81,10 @@ export async function runChallenge(options: RunOptions): Promise<string> {
     observationPolicy: "pixels-only",
     actionPolicy: "keyboard-only",
     webSearch: "disabled",
-    shellTool: false,
+    networkBrowser: "disabled",
+    shellNetwork: "disabled",
+    standardCodexCapabilities: true,
+    codexHome: displayCodexHome(codexHome),
     saveIsolation: options.isolateSaves !== false,
     recording: options.record !== false,
   };
@@ -165,13 +178,11 @@ export async function runChallenge(options: RunOptions): Promise<string> {
       });
     }, 350);
 
-    const provider = await loadProviderConfig();
     const args = codexArguments({
       mcpEntry,
       arenaUrl: url,
       controlToken: controller.controlToken,
       reasoningEffort,
-      providerAssignments: provider?.assignments ?? [],
     });
     await writeFile(
       path.join(runDirectory, "codex-command.json"),
@@ -179,7 +190,7 @@ export async function runChallenge(options: RunOptions): Promise<string> {
     );
     codex = spawn("codex", args, {
       cwd: workDirectory,
-      env: process.env,
+      env: codexEnvironment(codexHome),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stderrStream = codex.stderr;
@@ -203,7 +214,7 @@ export async function runChallenge(options: RunOptions): Promise<string> {
         const root = event as Record<string, unknown>;
         if (root.type === "thread.started" && typeof root.thread_id === "string") {
           for (const activeTailer of tailers) activeTailer.stop();
-          const tailer = new RolloutTailer(root.thread_id);
+          const tailer = new RolloutTailer(root.thread_id, sessionsRoot);
           tailers.add(tailer);
           void tailer.follow(async (rolloutEvent, raw) => {
             state.ingestCodexEvent(rolloutEvent);
@@ -271,41 +282,26 @@ export function codexArguments(options: {
   arenaUrl: string;
   controlToken: string;
   reasoningEffort: string;
-  providerAssignments?: Array<{ key: string; tomlValue: string }>;
   prompt?: string;
 }): string[] {
   const config = (key: string, value: string) => ["-c", `${key}=${value}`];
   return [
     "exec",
-    "--strict-config",
     "--json",
     "--model",
     "gpt-6-astra",
     "--color",
     "never",
     "--sandbox",
-    "read-only",
-    "--ignore-user-config",
-    "--ignore-rules",
+    "workspace-write",
     "--skip-git-repo-check",
-    ...(options.providerAssignments ?? []).flatMap(({ key, tomlValue }) =>
-      config(key, tomlValue),
-    ),
     ...config("approval_policy", '"never"'),
+    ...config("sandbox_workspace_write.network_access", "false"),
     ...config("web_search", '"disabled"'),
     ...config("tools.web_search", "false"),
-    ...config("agents.enabled", "false"),
-    ...config("features.multi_agent", "false"),
-    ...config("features.shell_tool", "false"),
-    ...config("features.apps", "false"),
-    ...config("features.remote_plugin", "false"),
     ...config("features.browser_use", "false"),
-    ...config("features.computer_use", "false"),
-    ...config("features.image_generation", "false"),
-    ...config("features.skill_search", "false"),
-    ...config("features.memories", "false"),
-    ...config("features.hooks", "false"),
-    ...config("check_for_update_on_startup", "false"),
+    ...config("features.browser_use_external", "false"),
+    ...config("features.in_app_browser", "false"),
     ...config("model_reasoning_effort", `"${options.reasoningEffort}"`),
     ...config("mcp_servers.parabox.command", '"node"'),
     ...config("mcp_servers.parabox.args", JSON.stringify([options.mcpEntry])),
@@ -314,6 +310,7 @@ export function codexArguments(options: {
       `{ARENA_URL=${JSON.stringify(options.arenaUrl)},ARENA_CONTROL_TOKEN=${JSON.stringify(options.controlToken)}}`,
     ),
     ...config("mcp_servers.parabox.required", "true"),
+    ...config("mcp_servers.parabox.default_tools_approval_mode", '"approve"'),
     ...config(
       "mcp_servers.parabox.enabled_tools",
       JSON.stringify([

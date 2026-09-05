@@ -2,7 +2,7 @@
 
 A reproducible, screen-only benchmark harness for testing whether GPT-6-Astra can complete all **364 official levels** of Patrick's Parabox from a clean save.
 
-The model receives one neutral task sentence, rendered game frames, keyboard actions, and two self-inspection tools for elapsed time and token usage. It receives no walkthrough, level data, save contents, shell, browser, web search, skills, apps, memory, or sub-agents.
+The model receives one neutral task sentence, rendered game frames, keyboard actions, and two self-inspection tools for elapsed time and token usage. It receives no walkthrough, level data, or save contents. Native web search and network browsers are disabled; normal Codex capabilities such as Shell, skills, plugins, memory, and sub-agents remain available.
 
 > This repository contains no game binary, game assets, save data, or recorded footage. A legitimately purchased Steam copy of Patrick's Parabox is required.
 
@@ -41,7 +41,9 @@ npm run build
 npm run doctor
 ```
 
-Validate local Codex authentication and the exact four-tool MCP surface with a small, non-challenge GPT-6-Astra turn before touching saves:
+By default, the harness uses `~/.codex-official` when that directory contains `auth.json`, then falls back to the normal Codex home. Override it with `--codex-home PATH` or `ASTRA_CODEX_HOME`. Credentials are never copied into run artifacts.
+
+Validate authentication and the four benchmark-specific MCP tools with a small, non-challenge GPT-6-Astra turn before touching saves:
 
 ```bash
 node dist/src/cli.js smoke-model
@@ -67,15 +69,18 @@ Defaults:
 - model: `gpt-6-astra`
 - reasoning effort: `high`
 - completion: exactly `364/364`
-- prompt: `Complete all 364 official levels in Patrick's Parabox. Interact only through the provided tools.`
+- prompt: `Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.`
 - recording: 30 FPS Matroska, full primary output
 - UI: native game at 67%, director dashboard at 33%
-- search and non-game tools: disabled
+- native web search and network browsers: disabled
+- Shell: enabled in an empty writable workspace, with outbound network disabled
+- skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
 
 Useful variants:
 
 ```bash
 node dist/src/cli.js run --reasoning xhigh
+node dist/src/cli.js run --codex-home ~/.codex-official
 node dist/src/cli.js run --no-record --no-browser
 node dist/src/cli.js restore runs/<run-id>/save-recovery.json
 ```
@@ -95,7 +100,7 @@ Codex receives matching MCP tools named `challenge_time` and `challenge_tokens`,
 
 The runner follows the documented `codex exec --json` stream and the local rollout's incremental token events. See the [Codex non-interactive mode documentation](https://learn.chatgpt.com/docs/non-interactive-mode) and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-`--ignore-user-config` removes personal tools and instructions. If the user's Codex config selects a custom model provider, the runner copies only a small allowlist of non-secret provider routing fields into command-line overrides; it never copies MCP servers, plugins, static HTTP headers, or credentials.
+The selected Codex home and its normal configuration stay active. The runner adds the Parabox MCP server, forces the official `gpt-6-astra` model, disables native web search and browser features, and uses a `workspace-write` sandbox with command network access off. Because app, plugin, and MCP traffic is outside the command sandbox, using any of them to retrieve external puzzle information invalidates the run; the complete Codex event stream is retained for audit.
 
 ## Reproducibility
 
