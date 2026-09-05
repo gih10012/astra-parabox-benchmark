@@ -2,6 +2,8 @@ import { access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+export const CODEX_COMMAND = "codex-proxy";
+
 export async function resolveCodexHome(
   explicitHome?: string,
 ): Promise<string | undefined> {
@@ -32,6 +34,8 @@ export function codexEnvironment(
         CODEX_HOME: codexHome,
         // The local Codex launcher honors this before exporting CODEX_HOME.
         CODEX_HOME_OVERRIDE: codexHome,
+        // codex-proxy uses this for the official authenticated profile.
+        CODEX_PROXY_HOME: codexHome,
       }
     : process.env;
 }

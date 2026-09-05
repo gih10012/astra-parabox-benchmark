@@ -48,6 +48,7 @@ test("passes the selected credential home through the local Codex launcher", () 
   const env = codexEnvironment("/credentials/codex");
   assert.equal(env.CODEX_HOME, "/credentials/codex");
   assert.equal(env.CODEX_HOME_OVERRIDE, "/credentials/codex");
+  assert.equal(env.CODEX_PROXY_HOME, "/credentials/codex");
 });
 
 test("resumes the same Codex thread with the constrained continuation prompt", () => {

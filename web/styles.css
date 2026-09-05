@@ -105,13 +105,20 @@ main { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(330px, .75
 .recursive-box > div { display: grid; place-items: center; width: 68%; height: 68%; border: 2px solid #438f81; transform: rotate(12deg); }
 .recursive-box > div > div { width: 48%; height: 48%; background: var(--teal); box-shadow: 0 0 30px #42e6c166; transform: rotate(19deg); }
 .transcript { overflow: auto; padding: 8px 12px 28px; scrollbar-color: #334149 transparent; }
-.event { display: grid; grid-template-columns: 35px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid #182126; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; }
+.event { display: grid; grid-template-columns: 46px 1fr; gap: 8px; padding: 9px 0; border-bottom: 1px solid #182126; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; }
 .event time { color: var(--muted); font-size: 8px; padding-top: 3px; }
+.event-body { min-width: 0; }
 .event p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.event.tool p { color: var(--amber); }
-.event.agent p { color: var(--ink); }
-.event.reasoning p { color: #9eb1ba; font-style: italic; }
-.event.error p { color: var(--danger); }
+.event-title::first-line { font-weight: 600; }
+.event.tool .event-title { color: var(--amber); }
+.event.agent .event-title { color: var(--ink); }
+.event.reasoning .event-title { color: #9eb1ba; font-style: italic; }
+.event.error .event-title, .error-text pre { color: var(--danger); }
+.event.success .event-title { color: var(--teal); }
+.event-detail { margin-top: 6px; border-left: 1px solid #34434a; padding-left: 8px; }
+.event-detail > span { display: block; margin-bottom: 2px; color: #65767e; font-size: 8px; }
+.event-detail pre { max-height: 210px; margin: 0; overflow: hidden; color: #aebbc0; font: inherit; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.event-detail.output pre { color: #c7d0d3; }
 footer { display: flex; justify-content: space-between; color: #596970; font-size: 8px; }
 
 body.compact .shell { padding: 12px; grid-template-rows: auto auto 1fr auto; }

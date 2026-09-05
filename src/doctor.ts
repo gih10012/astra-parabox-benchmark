@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CODEX_COMMAND,
   codexEnvironment,
   displayCodexHome,
   resolveCodexHome,
@@ -85,7 +86,7 @@ export async function runDoctor(options: { codexHome?: string } = {}): Promise<D
   const codexEnv = codexEnvironment(codexHome);
   const checks = await Promise.all([
     commandCheck("node"),
-    commandCheck("codex"),
+    commandCheck(CODEX_COMMAND),
     commandCheck("ffmpeg"),
     commandCheck("xprop"),
     commandCheck("cc"),
@@ -107,7 +108,7 @@ export async function runDoctor(options: { codexHome?: string } = {}): Promise<D
     fileCheck("Patrick's Parabox save directory", paths.saveDirectory),
   ]);
 
-  const loginResult = await runCommand("codex", ["login", "status"], {
+  const loginResult = await runCommand(CODEX_COMMAND, ["login", "status"], {
     env: codexEnv,
   });
   checks.push({
@@ -120,7 +121,7 @@ export async function runDoctor(options: { codexHome?: string } = {}): Promise<D
     required: true,
   });
 
-  const modelResult = await runCommand("codex", ["debug", "models", "--bundled"], {
+  const modelResult = await runCommand(CODEX_COMMAND, ["debug", "models", "--bundled"], {
     env: codexEnv,
   });
   let modelOk = false;

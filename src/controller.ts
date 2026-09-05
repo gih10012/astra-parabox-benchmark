@@ -21,6 +21,12 @@ interface ControllerOptions {
   controlToken?: string;
 }
 
+interface TranscriptRecord {
+  sequence: number;
+  at: string;
+  event: unknown;
+}
+
 export class ArenaController {
   readonly state: ChallengeState;
   readonly game: GameAdapter;
@@ -28,10 +34,11 @@ export class ArenaController {
   readonly requestedPort: number;
   readonly webRoot: string;
   readonly controlToken: string;
-  readonly transcript: unknown[] = [];
+  readonly transcript: TranscriptRecord[] = [];
   #server: Server | null = null;
   #clients = new Set<ServerResponse>();
   #frame: GameFrame | null = null;
+  #transcriptSequence = 0;
 
   constructor(options: ControllerOptions) {
     this.state = options.state;
@@ -86,9 +93,14 @@ export class ArenaController {
   }
 
   publishTranscript(event: unknown): void {
-    this.transcript.push(event);
+    const record: TranscriptRecord = {
+      sequence: ++this.#transcriptSequence,
+      at: new Date().toISOString(),
+      event,
+    };
+    this.transcript.push(record);
     if (this.transcript.length > 1_000) this.transcript.shift();
-    this.broadcast("transcript", event);
+    this.broadcast("transcript", record);
   }
 
   broadcast(name: string, data: unknown): void {

@@ -115,25 +115,45 @@ function rateLimitTypeMatchesWindow(type: string, name: string): boolean {
 export function publicTranscriptEvent(event: unknown): unknown | null {
   const root = object(event);
   if (!root || typeof root.type !== "string") return null;
-  if (root.type === "thread.started" || root.type.startsWith("turn.")) {
-    return root;
+  return sanitizeTranscriptValue(root, null, 0);
+}
+
+function sanitizeTranscriptValue(
+  value: unknown,
+  key: string | null,
+  depth: number,
+): unknown {
+  if (depth > 12) return "[nested value omitted]";
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
   }
-  if (!root.type.startsWith("item.")) return null;
-  const item = object(root.item);
-  if (!item) return null;
-  const type = typeof item.type === "string" ? item.type : "unknown";
-  const visible: JsonObject = {
-    type: root.type,
-    item: { type, status: item.status ?? null },
-  };
-  if (type === "agent_message" || type === "reasoning") {
-    (visible.item as JsonObject).text = item.text ?? "";
-  } else if (type === "mcp_tool_call") {
-    (visible.item as JsonObject).server = item.server ?? null;
-    (visible.item as JsonObject).tool = item.tool ?? item.name ?? null;
-    (visible.item as JsonObject).arguments = item.arguments ?? null;
-    (visible.item as JsonObject).result = item.result ?? null;
-    (visible.item as JsonObject).error = item.error ?? null;
+  if (typeof value === "string") {
+    if (key && /^(?:authorization|control_?token|api_?key|secret)$/i.test(key)) {
+      return "[REDACTED]";
+    }
+    if (
+      value.startsWith("data:image/") ||
+      (key === "data" && value.length > 512) ||
+      (value.length > 4_096 && /^[A-Za-z0-9+/_=-]+$/.test(value))
+    ) {
+      return `[binary payload omitted: ${value.length} characters]`;
+    }
+    return value
+      .replace(
+        /(ARENA_CONTROL_TOKEN(?:["']?\s*[:=]\s*["']?))[A-Za-z0-9_-]+/gi,
+        "$1[REDACTED]",
+      )
+      .replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._~-]+/gi, "$1[REDACTED]");
   }
-  return visible;
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeTranscriptValue(entry, key, depth + 1));
+  }
+  const record = object(value);
+  if (!record) return String(value);
+  return Object.fromEntries(
+    Object.entries(record).map(([childKey, childValue]) => [
+      childKey,
+      sanitizeTranscriptValue(childValue, childKey, depth + 1),
+    ]),
+  );
 }

@@ -100,6 +100,7 @@ For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `ye
 Defaults:
 
 - model: `gpt-6-astra`
+- launcher: `codex-proxy` (local port 7890 proxy and official auth profile)
 - reasoning effort: `high`
 - completion: exactly `364/364`
 - prompt: `Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.`

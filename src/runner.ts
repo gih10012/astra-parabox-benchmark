@@ -13,6 +13,7 @@ import readline from "node:readline";
 import { AuditLog, createRunId } from "./audit-log.js";
 import { ChallengeState } from "./challenge-state.js";
 import {
+  CODEX_COMMAND,
   codexEnvironment,
   displayCodexHome,
   resolveCodexHome,
@@ -149,6 +150,7 @@ async function initializeChallenge(
     networkBrowser: "disabled",
     shellNetwork: "disabled",
     standardCodexCapabilities: true,
+    codexLauncher: CODEX_COMMAND,
     codexHome: displayCodexHome(codexHome),
     saveIsolation: persistedOptions.isolateSaves,
     recording: persistedOptions.record,
@@ -366,6 +368,10 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
     const url = await activeController.listen();
     console.log(`Director dashboard: ${url}`);
     await audit.append("controller.ready", { url });
+    activeController.publishTranscript({
+      type: "runner.ready",
+      message: "Hidden game and challenge controller are ready.",
+    });
     await fetch(new URL("/internal/observe", url), {
       method: "POST",
       headers: {
@@ -476,9 +482,9 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       });
       await writeFile(
         path.join(runDirectory, `codex-command-part-${part}.json`),
-        `${JSON.stringify({ command: "codex", args: redactControlToken(args) }, null, 2)}\n`,
+        `${JSON.stringify({ command: CODEX_COMMAND, args: redactControlToken(args) }, null, 2)}\n`,
       );
-      codex = spawn("codex", args, {
+      codex = spawn(CODEX_COMMAND, args, {
         cwd: workDirectory,
         env: codexEnvironment(codexHome),
         stdio: ["ignore", "pipe", "pipe"],
@@ -488,6 +494,16 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         const text = chunk.toString("utf8").trimEnd();
         inspectDiagnostic(text);
         void audit.appendRaw(`codex-stderr-part-${part}.log`, text);
+        for (const line of text.split(/\r?\n/).filter(Boolean)) {
+          activeController.publishTranscript({
+            type: "stderr",
+            message: line,
+          });
+        }
+      });
+      activeController.publishTranscript({
+        type: "process.started",
+        process: CODEX_COMMAND,
       });
 
       const stdoutLines = readline.createInterface({ input: codex.stdout! });
@@ -539,6 +555,13 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         code: typeof code === "number" ? code : null,
         signal: typeof signal === "string" ? signal : null,
       }));
+      void exitPromise.then((exit) => {
+        activeController.publishTranscript({
+          type: "process.exited",
+          process: CODEX_COMMAND,
+          ...exit,
+        });
+      });
       const first = await Promise.race([
         exitPromise.then((exit) => ({ type: "exit" as const, exit })),
         finishPromise.then((snapshot) => ({ type: "finish" as const, snapshot })),
@@ -592,6 +615,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
           Date.now() + (requestedStop === "restart" ? 0 : retryDelayMs(attempt)),
         ).toISOString()
       : null;
+    controller?.publishTranscript({ type: "runner.error", message: reason });
     await audit.append("run.error", {
       attempt,
       message: reason,

@@ -3,7 +3,11 @@ import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { ChallengeState } from "./challenge-state.js";
-import { codexEnvironment, resolveCodexHome } from "./codex-home.js";
+import {
+  CODEX_COMMAND,
+  codexEnvironment,
+  resolveCodexHome,
+} from "./codex-home.js";
 import { ArenaController } from "./controller.js";
 import { MockGameAdapter } from "./game-adapter.js";
 import { codexArguments } from "./runner.js";
@@ -32,7 +36,7 @@ export async function runModelSmoke(rootDirectory: string, requestedCodexHome?: 
     prompt:
       "Call challenge_time exactly once, then reply only with the returned elapsedMs integer.",
   });
-  const child = spawn("codex", args, {
+  const child = spawn(CODEX_COMMAND, args, {
     cwd: os.tmpdir(),
     env: codexEnvironment(codexHome),
     stdio: ["ignore", "pipe", "pipe"],
