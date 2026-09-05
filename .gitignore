@@ -1,0 +1,10 @@
+node_modules/
+dist/
+runs/
+.arena/
+*.log
+*.mkv
+*.mp4
+*.mov
+.env
+coverage/

@@ -1,0 +1,31 @@
+{
+  "name": "astra-parabox-benchmark",
+  "version": "0.1.0",
+  "description": "A reproducible, screen-only Patrick's Parabox benchmark harness for GPT-6-Astra.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "bin": {
+    "parabox-arena": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx 'test/**/*.test.ts'",
+    "dev": "tsx src/cli.ts",
+    "doctor": "tsx src/cli.ts doctor",
+    "demo": "tsx src/cli.ts demo"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

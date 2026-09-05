@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Astra × Parabox Arena</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="identity">
+          <span class="mark">A</span>
+          <div>
+            <h1>ASTRA × PARABOX</h1>
+            <p>screen-only benchmark · public audit</p>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge safe"><i></i> WEB SEARCH OFF</span>
+          <span class="badge">364 OFFICIAL LEVELS</span>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="Challenge metrics">
+        <article>
+          <label>ELAPSED</label>
+          <strong id="elapsed">00:00:00.000</strong>
+        </article>
+        <article>
+          <label>TOKENS</label>
+          <strong id="tokens">0</strong>
+          <small id="token-breakdown">0 in · 0 out</small>
+        </article>
+        <article>
+          <label>PROGRESS</label>
+          <strong><span id="complete">0</span><em>/364</em></strong>
+          <div class="bar"><span id="progress-bar"></span></div>
+        </article>
+        <article>
+          <label>MODEL</label>
+          <strong id="model">GPT-6-ASTRA</strong>
+          <small id="status">READY</small>
+        </article>
+      </section>
+
+      <main>
+        <section class="game-panel">
+          <div class="panel-head">
+            <span>GAME FEED</span>
+            <small id="frame-time">awaiting frame</small>
+          </div>
+          <div class="game-stage">
+            <img id="game-frame" alt="Patrick's Parabox game feed" />
+            <div id="frame-placeholder">
+              <div class="recursive-box"><div><div></div></div></div>
+              <p>Native game remains the source of truth</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="session-panel">
+          <div class="panel-head">
+            <span>CODEX SESSION</span>
+            <small id="run-id">not started</small>
+          </div>
+          <div id="transcript" class="transcript" aria-live="polite">
+            <div class="event system">
+              <time>SYS</time>
+              <p>Waiting for the challenge runner.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>OBSERVATION: PIXELS ONLY</span>
+        <span>ACTIONS: KEYBOARD ONLY</span>
+        <span>MONOTONIC CLOCK</span>
+        <span>SHA-256 AUDIT TRAIL</span>
+      </footer>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
