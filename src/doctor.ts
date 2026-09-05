@@ -53,6 +53,19 @@ async function commandCheck(command: string, required = true): Promise<DoctorChe
   };
 }
 
+async function commandOrFileCheck(
+  command: string,
+  fallback: string,
+  required = true,
+): Promise<DoctorCheck> {
+  const commandResult = await commandCheck(command, required);
+  if (commandResult.ok) return commandResult;
+  const fileResult = await fileCheck(command, fallback, required);
+  return fileResult.ok
+    ? { ...fileResult, detail: `${fallback} (project-local runtime)` }
+    : commandResult;
+}
+
 async function fileCheck(
   name: string,
   filename: string,
@@ -73,12 +86,22 @@ export async function runDoctor(options: { codexHome?: string } = {}): Promise<D
   const checks = await Promise.all([
     commandCheck("node"),
     commandCheck("codex"),
-    commandCheck("niri"),
-    commandCheck("wtype"),
     commandCheck("ffmpeg"),
-    commandCheck("wf-recorder"),
-    commandCheck("google-chrome-stable", false),
+    commandCheck("xprop"),
+    commandCheck("cc"),
+    commandOrFileCheck(
+      "gamescope",
+      path.resolve(".arena/tools/gamescope-root/usr/bin/gamescope"),
+    ),
+    commandOrFileCheck(
+      "Xvfb",
+      path.resolve(".arena/tools/xvfb-root/usr/bin/Xvfb"),
+    ),
+    commandCheck("google-chrome-stable"),
     commandCheck("steam"),
+    commandCheck("niri", false),
+    commandCheck("wtype", false),
+    commandCheck("wf-recorder", false),
     fileCheck("Patrick's Parabox manifest", paths.manifest),
     fileCheck("Patrick's Parabox executable", paths.executable),
     fileCheck("Patrick's Parabox save directory", paths.saveDirectory),
@@ -135,15 +158,5 @@ export async function runDoctor(options: { codexHome?: string } = {}): Promise<D
     required: true,
   });
 
-  const niri = await runCommand("niri", ["msg", "version"]);
-  checks.push({
-    name: "niri IPC",
-    ok: niri.code === 0,
-    detail:
-      niri.code === 0
-        ? niri.stdout.toString("utf8").split("\n")[0] ?? "available"
-        : niri.stderr.toString("utf8").trim(),
-    required: true,
-  });
   return checks;
 }

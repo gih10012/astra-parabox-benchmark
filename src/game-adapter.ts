@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { expectCommand } from "./command.js";
+import { expectCommand, runCommand } from "./command.js";
 import {
   type AllowedKey,
   type GameAdapter,
@@ -135,6 +135,147 @@ export class NiriGameAdapter implements GameAdapter {
       "--id",
       String(this.#window.id),
     ]);
+    this.#window = null;
+  }
+
+  async #discoverWindow(): Promise<NiriWindow> {
+    await this.discover();
+    if (!this.#window) throw new Error("Game window discovery failed");
+    return this.#window;
+  }
+
+  async #exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#serial.then(operation, operation);
+    this.#serial = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await result;
+  }
+}
+
+export class X11GameAdapter implements GameAdapter {
+  readonly display: string;
+  readonly frameDirectory: string;
+  readonly keypressCommand: string;
+  readonly titlePattern: RegExp;
+  #window: NiriWindow | null = null;
+  #captureCounter = 0;
+  #serial: Promise<unknown> = Promise.resolve();
+
+  constructor(options: {
+    display: string;
+    frameDirectory: string;
+    keypressCommand: string;
+    titlePattern?: RegExp;
+  }) {
+    this.display = options.display;
+    this.frameDirectory = options.frameDirectory;
+    this.keypressCommand = options.keypressCommand;
+    this.titlePattern = options.titlePattern ?? /Patrick'?s Parabox|steam_app_1260520/i;
+  }
+
+  async discover(): Promise<{ windowId: number; title: string }> {
+    const root = await expectCommand("xprop", [
+      "-display",
+      this.display,
+      "-root",
+      "GAMESCOPE_FOCUSABLE_WINDOWS",
+      "GAMESCOPE_FOCUSED_WINDOW",
+    ]);
+    const ids = [...new Set(
+      [...root.toString("utf8").matchAll(/\b\d{4,}\b/g)].map((match) =>
+        Number(match[0]),
+      ),
+    )].filter((id) => Number.isSafeInteger(id) && id > 0);
+    for (const id of ids) {
+      const result = await runCommand("xprop", [
+        "-display",
+        this.display,
+        "-id",
+        String(id),
+        "WM_NAME",
+        "_NET_WM_NAME",
+        "WM_CLASS",
+      ]);
+      if (result.code !== 0) continue;
+      const properties = result.stdout.toString("utf8");
+      if (!this.titlePattern.test(properties)) continue;
+      const title =
+        /(?:_NET_WM_NAME|WM_NAME)[^(]*\([^)]*\)\s*=\s*"([^"]+)"/.exec(
+          properties,
+        )?.[1] ?? "Patrick's Parabox";
+      this.#window = { id, title, app_id: "steam_app_1260520" };
+      return { windowId: id, title };
+    }
+    throw new Error("Patrick's Parabox window not found on the private X display");
+  }
+
+  async capture(): Promise<GameFrame> {
+    return await this.#exclusive(async () => {
+      const window = this.#window ?? (await this.#discoverWindow());
+      await mkdir(this.frameDirectory, { recursive: true });
+      const number = String(++this.#captureCounter).padStart(8, "0");
+      const jpegPath = path.join(this.frameDirectory, `${number}.jpg`);
+      await expectCommand("ffmpeg", [
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "x11grab",
+        "-draw_mouse",
+        "0",
+        "-framerate",
+        "30",
+        "-window_id",
+        String(window.id),
+        "-i",
+        `${this.display}.0`,
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale='min(1280,iw)':-2",
+        "-q:v",
+        "3",
+        jpegPath,
+      ], { timeoutMs: 10_000 });
+      const data = await readFile(jpegPath);
+      return {
+        data,
+        mimeType: "image/jpeg",
+        sha256: createHash("sha256").update(data).digest("hex"),
+        capturedAt: new Date().toISOString(),
+      };
+    });
+  }
+
+  async press(
+    keys: AllowedKey[],
+    options: { intervalMs: number; settleMs: number },
+  ): Promise<void> {
+    await this.#exclusive(async () => {
+      const window = this.#window ?? (await this.#discoverWindow());
+      await expectCommand(
+        this.keypressCommand,
+        [
+          this.display,
+          String(window.id),
+          String(options.intervalMs),
+          String(options.settleMs),
+          ...keys.map((key) => keyNames[key]),
+        ],
+        {
+          timeoutMs: Math.max(
+            15_000,
+            keys.length * options.intervalMs + options.settleMs + 5_000,
+          ),
+        },
+      );
+    });
+  }
+
+  async close(): Promise<void> {
     this.#window = null;
   }
 

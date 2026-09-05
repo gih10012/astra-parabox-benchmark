@@ -31,13 +31,13 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 - `checkpoint.json` and the latest challenge save are atomically replaced and synced every five seconds while the model is active.
 - The checkpoint includes the Codex thread ID, attempt number, cumulative active time, cumulative token sample, referee progress, retry time, and recording-part list. It never contains the arena control token or Codex credentials.
 - Quota and rate-limit errors enter `waiting_quota`. The retry uses Codex's machine-readable `resets_at` for the exhausted 5-hour or weekly window, plus a one-minute margin. If multiple windows are exhausted, it uses the later reset. Five hours is the fallback only when no valid future timestamp is available.
-- A stale `running` checkpoint after process death or reboot becomes immediately eligible for watchdog recovery once niri is available.
+- A stale `running` checkpoint after process death or reboot becomes immediately eligible for watchdog recovery once the user's runtime directory is available. A physical compositor is not required.
 - `SIGINT` creates a manual `paused` state. `SIGTERM` creates an immediately retryable state for shutdown/service restart.
 - The original player saves remain in `save-backup/` throughout an incomplete run. A completed challenge archives the final challenge save and restores the originals.
 
 ## Metric boundaries
 
-- The monotonic timer starts immediately before the `codex exec` process is spawned, after the clean game window, controller, layout, and recorder are ready.
+- The monotonic timer starts immediately before the `codex exec` process is spawned, after the clean game window, controller, two private virtual displays, and recorder are ready.
 - The timer freezes on the first referee sample showing 364/364. Setup, teardown, video finalization, and original-save restoration are excluded.
 - Active elapsed time sums only intervals in which an attempt has reached the ready game/controller/recorder boundary and Codex is running. Quota waits, reboot downtime, and recovery setup are excluded.
 - The final summary separately reports wall elapsed time and inactive elapsed time. Only an attempt count of one is classified as `continuous`; any recovered run is classified as `resumed`.

@@ -8,20 +8,24 @@ The model receives one neutral task sentence, rendered game frames, keyboard act
 
 ## Why this architecture
 
-The native game window remains the sole source of truth. A local MCP bridge captures that window and sends keyboard events. A separate director dashboard renders the Codex event stream and official metrics for the recording.
+The native game window remains the sole source of truth. It runs on an isolated Gamescope headless display, where a local MCP bridge captures that window and sends keyboard events. A separate Chrome instance renders the director dashboard inside Xvfb. Neither window is mapped to the operator's physical desktop.
 
 ```text
                     ┌─ observe_game / press_keys ─┐
-GPT-6-Astra (Codex) ┤                              ├─ Native game window
+GPT-6-Astra (Codex) ┤                              ├─ Native game in Gamescope headless
                     └─ challenge_time / tokens ───┤
                                                   │
 Codex JSONL + rollout usage ── Arena controller ──┼─ Director dashboard
 Game save (referee only) ─────────────────────────┘
                                                   │
-Wayland output ─────────────────────────── wf-recorder → recording parts
+Game X11 capture + dashboard Xvfb capture ── FFmpeg hstack → recording parts
 ```
 
-The browser is deliberately not the control plane. This avoids a lossy browser reimplementation of the game, cuts latency, and lets viewers see the unmodified native game beside an exact, read-only Codex transcript.
+The browser is deliberately not the control plane. This avoids a lossy browser reimplementation of the game, cuts latency, and lets viewers see the unmodified native game beside an exact, read-only Codex transcript. The loopback dashboard URL remains available for an operator to open manually, but no physical browser is opened by default.
+
+## Formal layout sample
+
+[Download the 6-second 1920×1080 sample](https://github.com/gih10012/astra-parabox-benchmark/releases/download/headless-sample-v0.2.0/astra-parabox-formal-sample.mp4). Both panes were rendered and captured on private virtual displays. The left pane is the real Steam game; the right pane is a director-dashboard rehearsal. This is a production/layout sample, not a claimed benchmark result, and it uses no model tokens.
 
 ## Requirements
 
@@ -30,8 +34,14 @@ The current implementation targets Linux with:
 - Node.js 22+
 - Codex CLI with `gpt-6-astra`
 - Patrick's Parabox (Steam app `1260520`)
-- Wayland with the niri compositor
-- `wtype`, FFmpeg, `wf-recorder`, Steam, and optionally Google Chrome
+- Gamescope with its headless backend and Xwayland
+- Xvfb, `xprop`, FFmpeg, Steam, Google Chrome, a C compiler, and X11/XTest headers
+
+On Arch Linux the additional runtime packages are:
+
+```bash
+sudo pacman -S gamescope xorg-server-xvfb xorg-xprop libxtst
+```
 
 Install and verify:
 
@@ -55,9 +65,15 @@ Preview the director dashboard without touching the game or using model tokens:
 npm run demo
 ```
 
+The command prints a loopback URL and does not open a window. Use `npm run demo -- --browser` only when you explicitly want a physical monitoring window. Test the complete hidden game, screenshot, keyboard, dashboard, recorder, and cleanup path without using model tokens:
+
+```bash
+node dist/src/cli.js smoke-headless
+```
+
 ## Formal run
 
-Before a recorded run, disable Steam Cloud for Patrick's Parabox and close the game. The harness temporarily moves existing `save*.txt` files into the run's recoverable backup, starts with no save slots, archives the challenge save at the end, and restores the originals.
+Before a recorded run, disable Steam Cloud for Patrick's Parabox and close Steam completely. The harness refuses to start while another Steam process exists, preventing Steam's single-instance forwarding from placing the game on the physical desktop. It temporarily moves existing `save*.txt` files into the run's recoverable backup, starts with no save slots, archives the challenge save at the end, and restores the originals.
 
 ```bash
 npm run build
@@ -71,9 +87,9 @@ node dist/src/cli.js service install
 node dist/src/cli.js service status
 ```
 
-The service starts with the user systemd manager, waits for the niri graphical session, and watches the single active run. A rebooted run resumes automatically after the desktop is available. If Codex reports a quota/rate-limit error, the watchdog uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`.
+The service starts with the user systemd manager and watches the single active run. A rebooted run resumes as soon as the user's runtime directory is available; it does not wait for niri or another physical compositor. If Codex reports a quota/rate-limit error, the watchdog uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`.
 
-For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `yes` (enable linger once if needed). The watchdog can start before login, but launching and recording the game still waits until the niri desktop session exists.
+For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `yes` (enable linger once if needed). The game and recorder use private virtual displays and never require a physical desktop session.
 
 Defaults:
 
@@ -81,8 +97,9 @@ Defaults:
 - reasoning effort: `high`
 - completion: exactly `364/364`
 - prompt: `Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.`
-- recording: 30 FPS Matroska parts, full primary output
-- UI: native game at 67%, director dashboard at 33%
+- recording: 1920×1080, 30 FPS Matroska parts from private displays
+- UI: native game at 1280×1080, director dashboard at 640×1080
+- physical desktop windows: none by default; `--browser` opens only the monitoring dashboard
 - native web search and network browsers: disabled
 - Shell: enabled in an empty writable workspace, with outbound network disabled
 - skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
@@ -95,7 +112,8 @@ Useful variants:
 node dist/src/cli.js run --reasoning xhigh
 node dist/src/cli.js run --quota-wait-hours 5
 node dist/src/cli.js run --codex-home ~/.codex-official
-node dist/src/cli.js run --no-record --no-browser
+node dist/src/cli.js run --no-record
+node dist/src/cli.js run --browser
 node dist/src/cli.js status
 node dist/src/cli.js resume runs/<run-id>
 node dist/src/cli.js cancel runs/<run-id>

@@ -6,6 +6,7 @@ import { ChallengeState } from "./challenge-state.js";
 import { ArenaController } from "./controller.js";
 import { runDoctor } from "./doctor.js";
 import { MockGameAdapter } from "./game-adapter.js";
+import { runHeadlessSmoke } from "./headless-smoke.js";
 import { runModelSmoke } from "./model-smoke.js";
 import { CheckpointStore, readActiveRun } from "./run-checkpoint.js";
 import { restoreFromRecovery } from "./save-guard.js";
@@ -96,7 +97,7 @@ if (command === "doctor") {
     body: "{}",
   });
   console.log(`Director dashboard: ${url}`);
-  if (!args.includes("--no-browser")) {
+  if (args.includes("--browser")) {
     spawn("google-chrome-stable", [`--app=${url}`], {
       detached: true,
       stdio: "ignore",
@@ -132,7 +133,7 @@ if (command === "doctor") {
     port: numberArg(args, "--port", 4317),
     reasoningEffort: reasoning,
     record: !args.includes("--no-record"),
-    openDashboard: !args.includes("--no-browser"),
+    openDashboard: args.includes("--browser"),
     isolateSaves: !args.includes("--keep-saves"),
     quotaWaitMs: quotaWaitHours * 60 * 60 * 1_000,
     ...(requestedCodexHome ? { codexHome: requestedCodexHome } : {}),
@@ -182,6 +183,8 @@ if (command === "doctor") {
   );
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
+} else if (command === "smoke-headless") {
+  console.log(JSON.stringify(await runHeadlessSmoke(rootDirectory), null, 2));
 } else if (command === "restore") {
   const recovery = args[0];
   if (!recovery) throw new Error("Usage: parabox-arena restore <save-recovery.json>");
@@ -192,9 +195,10 @@ if (command === "doctor") {
 
 Usage:
   parabox-arena doctor [--json] [--codex-home PATH]
-  parabox-arena demo [--port 4317] [--duration SECONDS] [--no-browser]
+  parabox-arena demo [--port 4317] [--duration SECONDS] [--browser]
   parabox-arena smoke-model [--codex-home PATH]
-  parabox-arena run [--reasoning high] [--quota-wait-hours 5] [--codex-home PATH] [--no-record] [--no-browser] [--keep-saves]
+  parabox-arena smoke-headless
+  parabox-arena run [--reasoning high] [--quota-wait-hours 5] [--codex-home PATH] [--no-record] [--browser] [--keep-saves]
   parabox-arena resume <run-directory>
   parabox-arena cancel <run-directory>
   parabox-arena status

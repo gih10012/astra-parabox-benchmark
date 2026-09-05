@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runCommand } from "./command.js";
@@ -12,12 +12,8 @@ import {
 } from "./run-checkpoint.js";
 
 const SERVICE_NAME = "astra-parabox-watchdog.service";
-const graphicalVariables = [
+const sessionVariables = [
   "DBUS_SESSION_BUS_ADDRESS",
-  "DISPLAY",
-  "NIRI_SOCKET",
-  "WAYLAND_DISPLAY",
-  "XDG_CURRENT_DESKTOP",
   "XDG_RUNTIME_DIR",
 ] as const;
 
@@ -91,8 +87,8 @@ export async function runWatchdog(
         continue;
       }
 
-      const environment = await graphicalEnvironment();
-      if (!(await graphicalSessionReady(environment))) {
+      const environment = await userRuntimeEnvironment();
+      if (!(await userRuntimeReady(environment))) {
         await delay(pollMs);
         continue;
       }
@@ -143,7 +139,7 @@ TimeoutStopSec=30
 WantedBy=default.target
 `;
   await writeFile(servicePath, unit, { mode: 0o644 });
-  const presentVariables = graphicalVariables.filter(
+  const presentVariables = sessionVariables.filter(
     (name) => process.env[name] !== undefined,
   );
   if (presentVariables.length > 0) {
@@ -189,7 +185,7 @@ export async function watchdogServiceStatus(): Promise<{
   };
 }
 
-async function graphicalEnvironment(): Promise<NodeJS.ProcessEnv> {
+async function userRuntimeEnvironment(): Promise<NodeJS.ProcessEnv> {
   const environment = { ...process.env };
   const result = await runCommand("systemctl", ["--user", "show-environment"]);
   if (result.code !== 0) return environment;
@@ -197,35 +193,20 @@ async function graphicalEnvironment(): Promise<NodeJS.ProcessEnv> {
     const separator = line.indexOf("=");
     if (separator <= 0) continue;
     const name = line.slice(0, separator);
-    if (!graphicalVariables.includes(name as (typeof graphicalVariables)[number])) {
+    if (!sessionVariables.includes(name as (typeof sessionVariables)[number])) {
       continue;
     }
     environment[name] = line.slice(separator + 1);
   }
-  if (!(await pathExists(environment.NIRI_SOCKET))) {
-    const runtimeDirectory = environment.XDG_RUNTIME_DIR;
-    if (runtimeDirectory) {
-      const socket = (await readdir(runtimeDirectory).catch(() => []))
-        .filter((name) => /^niri\..+\.\d+\.sock$/.test(name))
-        .sort()
-        .at(-1);
-      if (socket) {
-        environment.NIRI_SOCKET = path.join(runtimeDirectory, socket);
-        const display = /^niri\.(.+)\.\d+\.sock$/.exec(socket)?.[1];
-        if (display) environment.WAYLAND_DISPLAY = display;
-      }
-    }
+  if (!environment.XDG_RUNTIME_DIR) {
+    const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+    environment.XDG_RUNTIME_DIR = `/run/user/${uid}`;
   }
   return environment;
 }
 
-async function graphicalSessionReady(env: NodeJS.ProcessEnv): Promise<boolean> {
-  if (!env.NIRI_SOCKET || !env.WAYLAND_DISPLAY) return false;
-  const result = await runCommand("niri", ["msg", "version"], {
-    env,
-    timeoutMs: 3_000,
-  });
-  return result.code === 0;
+async function userRuntimeReady(env: NodeJS.ProcessEnv): Promise<boolean> {
+  return await pathExists(env.XDG_RUNTIME_DIR);
 }
 
 async function pathExists(filename: string | undefined): Promise<boolean> {

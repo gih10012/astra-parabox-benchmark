@@ -26,7 +26,14 @@ import {
 import { runCommand } from "./command.js";
 import { ArenaController } from "./controller.js";
 import { defaultGamePaths } from "./doctor.js";
-import { NiriGameAdapter } from "./game-adapter.js";
+import { X11GameAdapter } from "./game-adapter.js";
+import {
+  hiddenRecorderArguments,
+  startVirtualDashboard,
+  startVirtualGame,
+  type VirtualDashboardRuntime,
+  type VirtualGameRuntime,
+} from "./headless-display.js";
 import { RolloutTailer } from "./rollout-tailer.js";
 import {
   CheckpointStore,
@@ -82,7 +89,7 @@ export async function runChallenge(options: RunOptions): Promise<RunOutcome> {
     port: options.port ?? 4317,
     reasoningEffort: options.reasoningEffort ?? "high",
     record: options.record !== false,
-    openDashboard: options.openDashboard !== false,
+    openDashboard: options.openDashboard === true,
     isolateSaves: options.isolateSaves !== false,
     quotaWaitMs: options.quotaWaitMs ?? DEFAULT_QUOTA_WAIT_MS,
     ...(codexHome ? { codexHome } : {}),
@@ -126,6 +133,9 @@ export async function runChallenge(options: RunOptions): Promise<RunOutcome> {
     codexHome: displayCodexHome(codexHome),
     saveIsolation: persistedOptions.isolateSaves,
     recording: persistedOptions.record,
+    displayBackend: "gamescope-headless",
+    recordingBackend: "ffmpeg-x11grab",
+    physicalDesktopWindows: persistedOptions.openDashboard ? "monitor-only" : "none",
     resumable: true,
     quotaWaitMs: persistedOptions.quotaWaitMs,
   };
@@ -222,13 +232,6 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   const paths = defaultGamePaths();
   const audit = new AuditLog(runDirectory);
   const state = new ChallengeState("gpt-6-astra", TARGET_LEVELS, attempt);
-  const game = new NiriGameAdapter({ frameDirectory });
-  const controller = new ArenaController({
-    state,
-    game,
-    port: prior.options.port,
-    webRoot: path.join(rootDirectory, "web"),
-  });
   const saveGuard = new SaveGuard(paths.saveDirectory, runDirectory);
   const codexHome = prior.options.codexHome;
   const sessionsRoot = path.join(
@@ -248,7 +251,10 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   let codex: ChildProcess | null = null;
   let recorder: ChildProcess | null = null;
   let browser: ChildProcess | null = null;
-  let gameLauncher: ChildProcess | null = null;
+  let game: X11GameAdapter | null = null;
+  let controller: ArenaController | null = null;
+  let virtualGame: VirtualGameRuntime | null = null;
+  let virtualDashboard: VirtualDashboardRuntime | null = null;
   const tailers = new Set<RolloutTailer>();
   const tailerTasks = new Set<Promise<void>>();
   const eventTasks = new Set<Promise<void>>();
@@ -289,6 +295,12 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   process.once("SIGTERM", onTerminate);
 
   try {
+    const steamStatus = await runCommand("pgrep", ["-x", "steam"]);
+    if (steamStatus.code === 0) {
+      throw new Error(
+        "Steam is already running. Close it before a headless challenge so it cannot forward the game to the physical desktop.",
+      );
+    }
     if (prior.options.isolateSaves) {
       if (prior.savePrepared) await saveGuard.resume();
       else {
@@ -298,33 +310,42 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       }
     }
 
-    gameLauncher = spawn(
-      "steam",
-      [
-        "-applaunch",
-        "1260520",
-        "-screen-fullscreen",
-        "0",
-        "-screen-width",
-        "1120",
-        "-screen-height",
-        "960",
-      ],
-      { detached: false, stdio: "ignore" },
-    );
+    virtualGame = await startVirtualGame({
+      rootDirectory,
+      runtimeDirectory,
+      executable: paths.executable,
+    });
+    const activeGame = new X11GameAdapter({
+      display: virtualGame.display,
+      frameDirectory,
+      keypressCommand: virtualGame.keypressCommand,
+    });
+    game = activeGame;
     const gameWindow = await waitForGame(
-      game,
+      activeGame,
       120_000,
       () => requestedStop !== null,
     );
-    await audit.append("game.ready", gameWindow);
+    await audit.append("game.ready", {
+      ...gameWindow,
+      backend: "gamescope-headless",
+      display: virtualGame.display,
+    });
 
-    const url = await controller.listen();
+    const activeController = new ArenaController({
+      state,
+      game: activeGame,
+      port: prior.options.port,
+      webRoot: path.join(rootDirectory, "web"),
+    });
+    controller = activeController;
+    const url = await activeController.listen();
+    console.log(`Director dashboard: ${url}`);
     await audit.append("controller.ready", { url });
     await fetch(new URL("/internal/observe", url), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${controller.controlToken}`,
+        Authorization: `Bearer ${activeController.controlToken}`,
         "Content-Type": "application/json",
       },
       body: "{}",
@@ -341,29 +362,30 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         ],
         { stdio: "ignore" },
       );
-      await arrangeWindows(gameWindow.windowId).catch(async (error: unknown) => {
-        await audit.append("layout.warning", String(error));
-      });
+      await audit.append("monitor.opened", { url, physicalDesktop: true });
     }
 
     if (prior.options.record) {
-      const output = await primaryOutput();
+      virtualDashboard = await startVirtualDashboard({
+        rootDirectory,
+        runtimeDirectory,
+        url,
+      });
       recorder = spawn(
-        "wf-recorder",
-        [
-          "-y",
-          "-D",
-          "-r",
-          "30",
-          "-o",
-          output,
-          "-f",
-          recordingPath,
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        "ffmpeg",
+        hiddenRecorderArguments({
+          gameDisplay: virtualGame.display,
+          gameWindowId: gameWindow.windowId,
+          dashboardDisplay: virtualDashboard.display,
+          output: recordingPath,
+        }),
+        { stdio: ["ignore", "ignore", "pipe"] },
       );
+      recorder.stderr?.on("data", (chunk: Buffer) => {
+        void audit.appendRaw(`recorder-part-${part}.log`, chunk.toString("utf8"));
+      });
       await delay(1_000);
-      if (recorder.exitCode !== null) throw new Error("wf-recorder exited early");
+      if (recorder.exitCode !== null) throw new Error("FFmpeg recorder exited early");
       await checkpointStore.update((current) => ({
         recordings: current.recordings.includes(recordingRelative)
           ? current.recordings
@@ -371,7 +393,9 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       }));
       await audit.append("recording.started", {
         attempt,
-        output,
+        backend: "gamescope-x11grab+xvfb-x11grab",
+        dimensions: "1920x1080",
+        framesPerSecond: 30,
         filename: recordingRelative,
       });
     }
@@ -422,7 +446,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       const args = codexArguments({
         mcpEntry,
         arenaUrl: url,
-        controlToken: controller.controlToken,
+        controlToken: activeController.controlToken,
         reasoningEffort: prior.options.reasoningEffort,
         ...(prior.threadId ? { resumeThreadId: prior.threadId } : {}),
       });
@@ -455,7 +479,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
           inspectEvent(event);
           state.ingestCodexEvent(event);
           const visible = publicTranscriptEvent(event);
-          if (visible) controller.publishTranscript(visible);
+          if (visible) activeController.publishTranscript(visible);
           const root = event as Record<string, unknown>;
           if (root.type === "error" || root.type === "turn.failed") {
             inspectDiagnostic(line);
@@ -564,11 +588,12 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       recorder.kill("SIGINT");
       await Promise.race([once(recorder, "exit"), delay(5_000)]).catch(() => undefined);
     }
-    await game.close?.().catch(() => undefined);
+    await game?.close().catch(() => undefined);
     await delay(500);
     browser?.kill("SIGTERM");
-    gameLauncher?.kill("SIGTERM");
-    await controller.close().catch(() => undefined);
+    await virtualDashboard?.close().catch(() => undefined);
+    await virtualGame?.close().catch(() => undefined);
+    await controller?.close().catch(() => undefined);
     if (prior.options.isolateSaves) {
       await saveGuard.checkpointChallenge().catch(async (error: unknown) => {
         await audit.append("checkpoint.save.warning", String(error));
@@ -701,7 +726,7 @@ function redactControlToken(args: string[]): string[] {
 }
 
 async function waitForGame(
-  game: NiriGameAdapter,
+  game: X11GameAdapter,
   timeoutMs = 120_000,
   cancelled: () => boolean = () => false,
 ): Promise<{ windowId: number; title: string }> {
@@ -717,52 +742,6 @@ async function waitForGame(
     }
   }
   throw lastError instanceof Error ? lastError : new Error("Game window timeout");
-}
-
-async function arrangeWindows(gameWindowId: number): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  let directorId: number | null = null;
-  while (Date.now() < deadline && directorId === null) {
-    const result = await runCommand("niri", ["msg", "--json", "windows"]);
-    if (result.code === 0) {
-      const windows = JSON.parse(result.stdout.toString("utf8")) as Array<{
-        id: number;
-        title: string;
-      }>;
-      directorId =
-        windows.find((window) => /Astra.*Parabox Arena/i.test(window.title))?.id ??
-        null;
-    }
-    if (directorId === null) await delay(250);
-  }
-  if (directorId === null) throw new Error("Director window not found");
-  await runCommand("niri", [
-    "msg",
-    "action",
-    "set-window-width",
-    "--id",
-    String(gameWindowId),
-    "67%",
-  ]);
-  await runCommand("niri", [
-    "msg",
-    "action",
-    "set-window-width",
-    "--id",
-    String(directorId),
-    "33%",
-  ]);
-  await runCommand("niri", ["msg", "action", "focus-window", "--id", String(gameWindowId)]);
-  await runCommand("niri", ["msg", "action", "center-visible-columns"]);
-}
-
-async function primaryOutput(): Promise<string> {
-  const result = await runCommand("niri", ["msg", "--json", "outputs"]);
-  if (result.code !== 0) throw new Error("Cannot read niri outputs");
-  const outputs = JSON.parse(result.stdout.toString("utf8")) as Record<string, unknown>;
-  const name = Object.keys(outputs)[0];
-  if (!name) throw new Error("No connected output");
-  return name;
 }
 
 async function readBestProgress(
