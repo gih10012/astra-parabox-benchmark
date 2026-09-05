@@ -57,3 +57,23 @@ test("tracks the largest cumulative token sample across event formats", () => {
     sampledAt: state.tokenSnapshot().sampledAt,
   });
 });
+
+test("restores cumulative metrics when a run resumes", () => {
+  const state = new ChallengeState("gpt-6-astra", 3);
+  state.start("run", 10_000, 20_000_000_000n, {
+    elapsedMs: 5_000,
+    startedAt: "1970-01-01T00:00:01.000Z",
+    tokens: {
+      inputTokens: 90,
+      cachedInputTokens: 40,
+      outputTokens: 10,
+      reasoningOutputTokens: 5,
+      totalTokens: 100,
+    },
+    progress: { total: 3, unlocked: 2, completed: 1 },
+  });
+  assert.equal(state.timeSnapshot(11_000, 20_250_000_000n).elapsedMs, 5_250);
+  assert.equal(state.timeSnapshot().startedAt, "1970-01-01T00:00:01.000Z");
+  assert.equal(state.tokenSnapshot().totalTokens, 100);
+  assert.equal(state.snapshot().progress.completed, 1);
+});

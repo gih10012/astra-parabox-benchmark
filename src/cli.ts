@@ -7,9 +7,16 @@ import { ArenaController } from "./controller.js";
 import { runDoctor } from "./doctor.js";
 import { MockGameAdapter } from "./game-adapter.js";
 import { runModelSmoke } from "./model-smoke.js";
+import { CheckpointStore, readActiveRun } from "./run-checkpoint.js";
 import { restoreFromRecovery } from "./save-guard.js";
-import { runChallenge } from "./runner.js";
+import { cancelChallenge, resumeChallenge, runChallenge } from "./runner.js";
 import { TARGET_LEVELS } from "./types.js";
+import {
+  installWatchdogService,
+  runWatchdog,
+  uninstallWatchdogService,
+  watchdogServiceStatus,
+} from "./watchdog.js";
 
 const sourceDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rootDirectory = path.resolve(
@@ -118,19 +125,56 @@ if (command === "doctor") {
     throw new Error("--reasoning must be low, medium, high, xhigh, or max");
   }
   const requestedCodexHome = optionalPathArg(args, "--codex-home");
-  const directory = await runChallenge({
+  const quotaWaitHours = numberArg(args, "--quota-wait-hours", 5);
+  if (quotaWaitHours <= 0) throw new Error("--quota-wait-hours must be positive");
+  const outcome = await runChallenge({
     rootDirectory,
     port: numberArg(args, "--port", 4317),
     reasoningEffort: reasoning,
     record: !args.includes("--no-record"),
     openDashboard: !args.includes("--no-browser"),
     isolateSaves: !args.includes("--keep-saves"),
+    quotaWaitMs: quotaWaitHours * 60 * 60 * 1_000,
     ...(requestedCodexHome ? { codexHome: requestedCodexHome } : {}),
     ...(outputValue
       ? { output: path.resolve(outputValue) }
       : {}),
   });
-  console.log(`Run artifacts: ${directory}`);
+  printOutcome(outcome);
+} else if (command === "resume") {
+  const runDirectory = args.find((argument) => !argument.startsWith("--"));
+  if (!runDirectory) throw new Error("Usage: parabox-arena resume <run-directory>");
+  printOutcome(await resumeChallenge(path.resolve(runDirectory)));
+} else if (command === "cancel") {
+  const runDirectory = args.find((argument) => !argument.startsWith("--"));
+  if (!runDirectory) throw new Error("Usage: parabox-arena cancel <run-directory>");
+  printOutcome(await cancelChallenge(path.resolve(runDirectory)));
+} else if (command === "daemon") {
+  await runWatchdog(rootDirectory, {
+    pollMs: numberArg(args, "--poll-seconds", 15) * 1_000,
+  });
+} else if (command === "service") {
+  const action = args[0] ?? "status";
+  if (action === "install") {
+    const servicePath = await installWatchdogService(rootDirectory);
+    console.log(`Installed and started: ${servicePath}`);
+  } else if (action === "uninstall") {
+    await uninstallWatchdogService();
+    console.log("Watchdog service removed.");
+  } else if (action === "status") {
+    console.log(JSON.stringify(await watchdogServiceStatus(), null, 2));
+  } else {
+    throw new Error("Usage: parabox-arena service install|status|uninstall");
+  }
+} else if (command === "status") {
+  const active = await readActiveRun(rootDirectory);
+  console.log(
+    JSON.stringify(
+      active ? (await CheckpointStore.load(active)).snapshot() : { active: false },
+      null,
+      2,
+    ),
+  );
 } else if (command === "smoke-model") {
   const result = await runModelSmoke(
     rootDirectory,
@@ -150,7 +194,12 @@ Usage:
   parabox-arena doctor [--json] [--codex-home PATH]
   parabox-arena demo [--port 4317] [--duration SECONDS] [--no-browser]
   parabox-arena smoke-model [--codex-home PATH]
-  parabox-arena run [--reasoning high] [--codex-home PATH] [--no-record] [--no-browser] [--keep-saves]
+  parabox-arena run [--reasoning high] [--quota-wait-hours 5] [--codex-home PATH] [--no-record] [--no-browser] [--keep-saves]
+  parabox-arena resume <run-directory>
+  parabox-arena cancel <run-directory>
+  parabox-arena status
+  parabox-arena daemon [--poll-seconds 15]
+  parabox-arena service install|status|uninstall
   parabox-arena restore <run/save-recovery.json>
 `);
 }
@@ -174,6 +223,18 @@ function optionalPathArg(args: string[], name: string): string | undefined {
   const value = index >= 0 ? args[index + 1] : undefined;
   if (index >= 0 && !value) throw new Error(`${name} requires a path`);
   return value ? path.resolve(value) : undefined;
+}
+
+function printOutcome(outcome: {
+  runDirectory: string;
+  phase: string;
+  retryAt: string | null;
+  reason: string | null;
+}): void {
+  console.log(`Run artifacts: ${outcome.runDirectory}`);
+  console.log(`Run phase: ${outcome.phase}`);
+  if (outcome.retryAt) console.log(`Automatic retry: ${outcome.retryAt}`);
+  if (outcome.reason) console.log(`Reason: ${outcome.reason}`);
 }
 
 function mockSave(total: number, completed: number): string {

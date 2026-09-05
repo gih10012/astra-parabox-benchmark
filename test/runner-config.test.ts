@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { codexEnvironment } from "../src/codex-home.js";
-import { codexArguments, NEUTRAL_PROMPT } from "../src/runner.js";
+import {
+  codexArguments,
+  isQuotaError,
+  NEUTRAL_PROMPT,
+  RESUME_PROMPT,
+} from "../src/runner.js";
 
 test("disables search and browsers while retaining normal Codex capabilities", () => {
   const args = codexArguments({
@@ -41,4 +46,25 @@ test("passes the selected credential home through the local Codex launcher", () 
   const env = codexEnvironment("/credentials/codex");
   assert.equal(env.CODEX_HOME, "/credentials/codex");
   assert.equal(env.CODEX_HOME_OVERRIDE, "/credentials/codex");
+});
+
+test("resumes the same Codex thread with the constrained continuation prompt", () => {
+  const args = codexArguments({
+    mcpEntry: "/arena/mcp.js",
+    arenaUrl: "http://127.0.0.1:4317",
+    controlToken: "secret",
+    reasoningEffort: "high",
+    resumeThreadId: "00000000-0000-0000-0000-000000000001",
+  });
+  assert.deepEqual(args.slice(-3), [
+    "resume",
+    "00000000-0000-0000-0000-000000000001",
+    RESUME_PROMPT,
+  ]);
+});
+
+test("recognizes common quota exhaustion errors without matching generic failures", () => {
+  assert.equal(isQuotaError("unexpected status 429 Too Many Requests"), true);
+  assert.equal(isQuotaError("You've hit your usage limit"), true);
+  assert.equal(isQuotaError("connection reset by peer"), false);
 });

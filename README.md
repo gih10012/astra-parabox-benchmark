@@ -18,7 +18,7 @@ GPT-6-Astra (Codex) ┤                              ├─ Native game window
 Codex JSONL + rollout usage ── Arena controller ──┼─ Director dashboard
 Game save (referee only) ─────────────────────────┘
                                                   │
-Wayland output ─────────────────────────── wf-recorder → challenge.mkv
+Wayland output ─────────────────────────── wf-recorder → recording parts
 ```
 
 The browser is deliberately not the control plane. This avoids a lossy browser reimplementation of the game, cuts latency, and lets viewers see the unmodified native game beside an exact, read-only Codex transcript.
@@ -64,28 +64,47 @@ npm run build
 node dist/src/cli.js run
 ```
 
+Install the per-user watchdog once before a long run:
+
+```bash
+node dist/src/cli.js service install
+node dist/src/cli.js service status
+```
+
+The service starts with the user systemd manager, waits for the niri graphical session, and watches the single active run. A rebooted run resumes automatically after the desktop is available. If Codex reports a quota/rate-limit error, the default retry time is five hours later; customize it with `--quota-wait-hours`.
+
+For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `yes` (enable linger once if needed). The watchdog can start before login, but launching and recording the game still waits until the niri desktop session exists.
+
 Defaults:
 
 - model: `gpt-6-astra`
 - reasoning effort: `high`
 - completion: exactly `364/364`
 - prompt: `Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.`
-- recording: 30 FPS Matroska, full primary output
+- recording: 30 FPS Matroska parts, full primary output
 - UI: native game at 67%, director dashboard at 33%
 - native web search and network browsers: disabled
 - Shell: enabled in an empty writable workspace, with outbound network disabled
 - skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
+- quota retry: automatic after 5 hours
+- crash checkpoint: cumulative time, tokens, thread ID, progress, and game save every 5 seconds
 
 Useful variants:
 
 ```bash
 node dist/src/cli.js run --reasoning xhigh
+node dist/src/cli.js run --quota-wait-hours 5
 node dist/src/cli.js run --codex-home ~/.codex-official
 node dist/src/cli.js run --no-record --no-browser
+node dist/src/cli.js status
+node dist/src/cli.js resume runs/<run-id>
+node dist/src/cli.js cancel runs/<run-id>
 node dist/src/cli.js restore runs/<run-id>/save-recovery.json
 ```
 
-Run artifacts are written under `runs/` and ignored by Git. Each run ends with a SHA-256 manifest. Keep the raw artifacts next to the published video or release them separately; do not commit game frames or save files to this repository.
+`Ctrl+C` pauses a run for manual inspection. `SIGTERM`, an unexpected runner death, or a reboot leaves it eligible for automatic restart. The active challenge timer excludes quota/reboot downtime and resumes from its checkpoint; the final summary also reports total wall time, inactive time, attempt count, and whether the run was `continuous` or `resumed`.
+
+Run artifacts are written under `runs/` and ignored by Git. Interrupted recording parts remain independently playable; concatenate them only after completion. Each completed run ends with a SHA-256 manifest. Keep the raw artifacts next to the published video or release them separately; do not commit game frames or save files to this repository.
 
 ## Public interfaces
 

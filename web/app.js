@@ -32,7 +32,9 @@ function applySnapshot(snapshot) {
     `${Math.min(100, (snapshot.progress.completed / snapshot.targetLevels) * 100)}%`;
   byId("model").textContent = snapshot.model.toUpperCase();
   byId("status").textContent = snapshot.status.toUpperCase();
-  byId("run-id").textContent = snapshot.runId || "not started";
+  byId("run-id").textContent = snapshot.runId
+    ? `${snapshot.runId} · PART ${String(snapshot.attempt || 1).padStart(4, "0")}`
+    : "not started";
 }
 
 function tick() {

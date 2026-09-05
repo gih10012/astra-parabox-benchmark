@@ -6,7 +6,7 @@
   "private": false,
   "license": "MIT",
   "bin": {
-    "parabox-arena": "dist/cli.js"
+    "parabox-arena": "dist/src/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

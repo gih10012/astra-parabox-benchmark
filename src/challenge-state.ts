@@ -17,10 +17,12 @@ import {
 export class ChallengeState extends EventEmitter {
   readonly model: string;
   readonly targetLevels: number;
+  readonly attempt: number;
   #runId: string | null = null;
   #status: ChallengeStatus = "idle";
   #startedAtWall: number | null = null;
   #startedAtMono: bigint | null = null;
+  #elapsedBeforeMs = 0;
   #endedAtWall: number | null = null;
   #endedAtMono: bigint | null = null;
   #usage: TokenUsage = emptyTokenUsage();
@@ -28,18 +30,36 @@ export class ChallengeState extends EventEmitter {
   #progress: LevelProgress = { total: 0, unlocked: 0, completed: 0 };
   #failure: string | null = null;
 
-  constructor(model = "gpt-6-astra", targetLevels = TARGET_LEVELS) {
+  constructor(model = "gpt-6-astra", targetLevels = TARGET_LEVELS, attempt = 1) {
     super();
     this.model = model;
     this.targetLevels = targetLevels;
+    this.attempt = attempt;
   }
 
-  start(runId: string, nowWall = Date.now(), nowMono = process.hrtime.bigint()): void {
+  start(
+    runId: string,
+    nowWall = Date.now(),
+    nowMono = process.hrtime.bigint(),
+    resume?: {
+      elapsedMs: number;
+      startedAt: string | null;
+      tokens: TokenUsage;
+      progress: LevelProgress;
+    },
+  ): void {
     if (this.#status !== "idle") throw new Error("Challenge already started");
     this.#runId = runId;
     this.#status = "running";
-    this.#startedAtWall = nowWall;
+    this.#startedAtWall = resume?.startedAt
+      ? Date.parse(resume.startedAt)
+      : nowWall;
     this.#startedAtMono = nowMono;
+    this.#elapsedBeforeMs = Math.max(0, resume?.elapsedMs ?? 0);
+    if (resume) {
+      this.#usage = { ...resume.tokens };
+      this.#progress = { ...resume.progress };
+    }
     this.emit("change", this.snapshot());
   }
 
@@ -96,8 +116,10 @@ export class ChallengeState extends EventEmitter {
   timeSnapshot(nowWall = Date.now(), nowMono = process.hrtime.bigint()) {
     const elapsedMs =
       this.#startedAtMono === null
-        ? 0
-        : Number((this.#endedAtMono ?? nowMono) - this.#startedAtMono) / 1_000_000;
+        ? this.#elapsedBeforeMs
+        : this.#elapsedBeforeMs +
+          Number((this.#endedAtMono ?? nowMono) - this.#startedAtMono) /
+            1_000_000;
     return {
       status: this.#status,
       elapsedMs: Math.max(0, Math.round(elapsedMs)),
@@ -125,6 +147,7 @@ export class ChallengeState extends EventEmitter {
     return {
       runId: this.#runId,
       model: this.model,
+      attempt: this.attempt,
       status: this.#status,
       targetLevels: this.targetLevels,
       progress: { ...this.#progress },

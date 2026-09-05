@@ -7,11 +7,12 @@
 3. Run `npm run doctor` and require every required check to pass.
 4. Run `node dist/src/cli.js smoke-model`; do not start a formal run unless it succeeds.
 5. Run `npm run demo` once to verify the director dashboard fits the intended crop.
-6. Ensure enough free space for a long 30 FPS Matroska recording and connect stable power/network. The model API needs network. Native search/browser access and shell network are disabled; any alternate external-information lookup invalidates the run.
+6. Run `node dist/src/cli.js service install` and confirm the watchdog is active.
+7. Ensure enough free space for long 30 FPS Matroska recording parts and connect stable power/network. The model API needs network. Native search/browser access and shell network are disabled; any alternate external-information lookup invalidates the run.
 
 ## During the take
 
-The runner opens the native game and the compact director dashboard side by side, then records the entire primary Wayland output. Do not interact after the timer starts. If human intervention is unavoidable, mark the run invalid and retain it only as a rehearsal.
+The runner opens the native game and the compact director dashboard side by side, then records the entire primary Wayland output. Do not interact after the timer starts. Infrastructure recovery is allowed only through the recorded watchdog path; human gameplay makes the run invalid.
 
 The director dashboard shows:
 
@@ -25,10 +26,10 @@ The dashboard does not send commands and is not visible to the model.
 
 ## After the take
 
-1. Confirm `summary.json` says `completed`, `364/364`, and `savesRestored: true`.
+1. Confirm `summary.json` says `completed`, `364/364`, and `savesRestored: true`; disclose its `continuous` or `resumed` classification.
 2. Run the test suite again at the exact commit used for the challenge.
 3. Verify `manifest.sha256.json` against the artifacts.
-4. Transcode the Matroska master to the platform delivery format; retain the original master.
+4. Concatenate the ordered `recordings/challenge-part-*.mkv` files, then transcode the result to the platform delivery format; retain every original part.
 5. Put the repository commit SHA, model, effort, Codex version, timer, token breakdown, prompt, and artifact manifest hash in the video description.
 6. Review raw logs, save files, browser profile, and frames before publishing. Do not upload credentials, local paths that reveal private information, or proprietary game data beyond footage permitted by the rights holder/platform.
 

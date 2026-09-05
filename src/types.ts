@@ -37,6 +37,7 @@ export interface TokenSnapshot extends TokenUsage {
 export interface ChallengeSnapshot {
   runId: string | null;
   model: string;
+  attempt: number;
   status: ChallengeStatus;
   targetLevels: number;
   progress: LevelProgress;
