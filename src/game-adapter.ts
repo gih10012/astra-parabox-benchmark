@@ -20,6 +20,8 @@ const keyNames: Record<AllowedKey, string> = {
   SPACE: "space",
 };
 
+const X11_KEY_HOLD_MS = 80;
+
 interface NiriWindow {
   id: number;
   title: string;
@@ -263,12 +265,15 @@ export class X11GameAdapter implements GameAdapter {
           String(window.id),
           String(options.intervalMs),
           String(options.settleMs),
+          String(X11_KEY_HOLD_MS),
           ...keys.map((key) => keyNames[key]),
         ],
         {
           timeoutMs: Math.max(
             15_000,
-            keys.length * options.intervalMs + options.settleMs + 5_000,
+            keys.length * (options.intervalMs + X11_KEY_HOLD_MS) +
+              options.settleMs +
+              5_000,
           ),
         },
       );

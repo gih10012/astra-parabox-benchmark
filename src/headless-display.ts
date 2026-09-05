@@ -419,6 +419,11 @@ function stopProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
       // The process has already exited.
     }
   }
+  // Proton descendants can outlive the launcher while retaining its inherited
+  // stdout/stderr pipes.  Detach those pipes during teardown so a finished
+  // runner cannot keep the watchdog blocked waiting for Node's event loop.
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 function logChildOutput(child: ChildProcess, filename: string): void {

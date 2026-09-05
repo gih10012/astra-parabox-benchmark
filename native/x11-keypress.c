@@ -25,9 +25,9 @@ static int parse_long(const char *value, long *result) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 6) {
+  if (argc < 7) {
     fputs(
-        "usage: astra-x11-keypress DISPLAY WINDOW INTERVAL_MS SETTLE_MS KEY...\n",
+        "usage: astra-x11-keypress DISPLAY WINDOW INTERVAL_MS SETTLE_MS HOLD_MS KEY...\n",
         stderr);
     return 2;
   }
@@ -35,9 +35,11 @@ int main(int argc, char **argv) {
   long window_value = 0;
   long interval_ms = 0;
   long settle_ms = 0;
+  long hold_ms = 0;
   if (!parse_long(argv[2], &window_value) || window_value <= 0 ||
       !parse_long(argv[3], &interval_ms) || interval_ms < 0 ||
-      !parse_long(argv[4], &settle_ms) || settle_ms < 0) {
+      !parse_long(argv[4], &settle_ms) || settle_ms < 0 ||
+      !parse_long(argv[5], &hold_ms) || hold_ms < 1) {
     fputs("astra-x11-keypress: invalid numeric argument\n", stderr);
     return 2;
   }
@@ -53,7 +55,7 @@ int main(int argc, char **argv) {
   XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
   XSync(display, False);
 
-  for (int index = 5; index < argc; index++) {
+  for (int index = 6; index < argc; index++) {
     const KeySym symbol = XStringToKeysym(argv[index]);
     const KeyCode code = symbol == NoSymbol ? 0 : XKeysymToKeycode(display, symbol);
     if (code == 0) {
@@ -62,6 +64,8 @@ int main(int argc, char **argv) {
       return 2;
     }
     XTestFakeKeyEvent(display, code, True, CurrentTime);
+    XFlush(display);
+    sleep_milliseconds(hold_ms);
     XTestFakeKeyEvent(display, code, False, CurrentTime);
     XFlush(display);
     if (index + 1 < argc && interval_ms > 0) sleep_milliseconds(interval_ms);
