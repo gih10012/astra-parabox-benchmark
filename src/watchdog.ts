@@ -22,14 +22,27 @@ export async function runWatchdog(
   options: { pollMs?: number; cliEntry?: string } = {},
 ): Promise<void> {
   const root = path.resolve(rootDirectory);
-  const pollMs = Math.max(1_000, options.pollMs ?? 15_000);
+  const pollMs = Math.max(1_000, options.pollMs ?? 1_000);
   const cliEntry = path.resolve(
     options.cliEntry ?? path.join(root, "dist/src/cli.js"),
   );
   let stopping = false;
   let child: ChildProcess | null = null;
+  let wakePending: (() => void) | null = null;
+  const wait = (milliseconds: number) =>
+    new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        if (wakePending === finish) wakePending = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.max(0, milliseconds));
+      wakePending = finish;
+    });
+  const wake = () => wakePending?.();
   const stop = () => {
     stopping = true;
+    wake();
     if (child?.exitCode === null) child.kill("SIGTERM");
   };
   process.once("SIGINT", stop);
@@ -40,7 +53,7 @@ export async function runWatchdog(
     while (!stopping) {
       const runDirectory = await readActiveRun(root);
       if (!runDirectory) {
-        await delay(pollMs);
+        await wait(pollMs);
         continue;
       }
 
@@ -49,7 +62,7 @@ export async function runWatchdog(
         store = await CheckpointStore.load(runDirectory);
       } catch (error) {
         console.error(`Cannot read active checkpoint: ${String(error)}`);
-        await delay(pollMs);
+        await wait(pollMs);
         continue;
       }
       let checkpoint = store.snapshot();
@@ -58,7 +71,7 @@ export async function runWatchdog(
         continue;
       }
       if (checkpoint.phase === "paused") {
-        await delay(pollMs);
+        await wait(pollMs);
         continue;
       }
       if (
@@ -66,7 +79,7 @@ export async function runWatchdog(
         checkpoint.pid !== null &&
         processMatches(checkpoint.pid, checkpoint.pidStartTicks)
       ) {
-        await delay(pollMs);
+        await wait(pollMs);
         continue;
       }
       if (checkpoint.phase === "running" || checkpoint.phase === "starting") {
@@ -83,13 +96,13 @@ export async function runWatchdog(
         ? Date.parse(checkpoint.retryAt)
         : Date.now();
       if (Number.isFinite(retryTime) && retryTime > Date.now()) {
-        await delay(Math.min(pollMs, retryTime - Date.now()));
+        await wait(Math.min(pollMs, retryTime - Date.now()));
         continue;
       }
 
       const environment = await userRuntimeEnvironment();
       if (!(await userRuntimeReady(environment))) {
-        await delay(pollMs);
+        await wait(pollMs);
         continue;
       }
 
@@ -106,9 +119,10 @@ export async function runWatchdog(
         child?.once("error", () => resolve());
       });
       child = null;
-      if (!stopping) await delay(1_000);
+      if (!stopping) await wait(1_000);
     }
   } finally {
+    wake();
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
   }
@@ -150,7 +164,8 @@ WantedBy=default.target
     ]);
   }
   await expectSystemctl(["daemon-reload"]);
-  await expectSystemctl(["enable", "--now", SERVICE_NAME]);
+  await expectSystemctl(["enable", SERVICE_NAME]);
+  await expectSystemctl(["restart", SERVICE_NAME]);
   return servicePath;
 }
 
@@ -239,8 +254,4 @@ async function expectSystemctl(args: string[]): Promise<void> {
   if (result.code !== 0) {
     throw new Error(result.stderr.toString("utf8").trim() || "systemctl failed");
   }
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)));
 }

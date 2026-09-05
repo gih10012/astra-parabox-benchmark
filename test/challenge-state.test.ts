@@ -47,14 +47,15 @@ test("tracks the largest cumulative token sample across event formats", () => {
       reasoning_output_tokens: 2,
     },
   });
-  assert.deepEqual(state.tokenSnapshot(), {
+  const snapshot = state.tokenSnapshot();
+  assert.deepEqual(snapshot, {
     inputTokens: 100,
     cachedInputTokens: 40,
     outputTokens: 20,
     reasoningOutputTokens: 8,
     totalTokens: 120,
     source: "rollout",
-    sampledAt: state.tokenSnapshot().sampledAt,
+    sampledAt: snapshot.sampledAt,
   });
 });
 

@@ -10,7 +10,13 @@ import { runHeadlessSmoke } from "./headless-smoke.js";
 import { runModelSmoke } from "./model-smoke.js";
 import { CheckpointStore, readActiveRun } from "./run-checkpoint.js";
 import { restoreFromRecovery } from "./save-guard.js";
-import { cancelChallenge, resumeChallenge, runChallenge } from "./runner.js";
+import {
+  cancelChallenge,
+  queueChallenge,
+  resumeChallenge,
+  runChallenge,
+  type RunOptions,
+} from "./runner.js";
 import { TARGET_LEVELS } from "./types.js";
 import {
   installWatchdogService,
@@ -128,7 +134,7 @@ if (command === "doctor") {
   const requestedCodexHome = optionalPathArg(args, "--codex-home");
   const quotaWaitHours = numberArg(args, "--quota-wait-hours", 5);
   if (quotaWaitHours <= 0) throw new Error("--quota-wait-hours must be positive");
-  const outcome = await runChallenge({
+  const runOptions: RunOptions = {
     rootDirectory,
     port: numberArg(args, "--port", 4317),
     reasoningEffort: reasoning,
@@ -140,8 +146,26 @@ if (command === "doctor") {
     ...(outputValue
       ? { output: path.resolve(outputValue) }
       : {}),
-  });
-  printOutcome(outcome);
+  };
+  if (args.includes("--foreground")) {
+    printOutcome(await runChallenge(runOptions));
+  } else {
+    const service = await watchdogServiceStatus();
+    if (!service.active || !service.enabled) {
+      throw new Error(
+        "The watchdog must be active and enabled. Run: node dist/src/cli.js service install",
+      );
+    }
+    const outcome = await queueChallenge(runOptions);
+    console.log(`Challenge queued under ${service.service}.`);
+    console.log(`Run artifacts: ${outcome.runDirectory}`);
+    console.log(`Director dashboard (once ready): http://127.0.0.1:${runOptions.port}`);
+    console.log("Status: node dist/src/cli.js status");
+    console.log(
+      `Logs: journalctl --user -u ${service.service} -f`,
+    );
+    console.log("You may close this terminal now.");
+  }
 } else if (command === "resume") {
   const runDirectory = args.find((argument) => !argument.startsWith("--"));
   if (!runDirectory) throw new Error("Usage: parabox-arena resume <run-directory>");
@@ -152,7 +176,7 @@ if (command === "doctor") {
   printOutcome(await cancelChallenge(path.resolve(runDirectory)));
 } else if (command === "daemon") {
   await runWatchdog(rootDirectory, {
-    pollMs: numberArg(args, "--poll-seconds", 15) * 1_000,
+    pollMs: numberArg(args, "--poll-seconds", 1) * 1_000,
   });
 } else if (command === "service") {
   const action = args[0] ?? "status";
@@ -198,11 +222,11 @@ Usage:
   parabox-arena demo [--port 4317] [--duration SECONDS] [--browser]
   parabox-arena smoke-model [--codex-home PATH]
   parabox-arena smoke-headless
-  parabox-arena run [--reasoning high] [--quota-wait-hours 5] [--codex-home PATH] [--no-record] [--browser] [--keep-saves]
+  parabox-arena run [--reasoning high] [--quota-wait-hours 5] [--codex-home PATH] [--no-record] [--browser] [--keep-saves] [--foreground]
   parabox-arena resume <run-directory>
   parabox-arena cancel <run-directory>
   parabox-arena status
-  parabox-arena daemon [--poll-seconds 15]
+  parabox-arena daemon [--poll-seconds 1]
   parabox-arena service install|status|uninstall
   parabox-arena restore <run/save-recovery.json>
 `);

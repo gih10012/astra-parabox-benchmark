@@ -77,14 +77,20 @@ Before a recorded run, disable Steam Cloud for Patrick's Parabox and close Steam
 
 ```bash
 npm run build
+node dist/src/cli.js service install
+node dist/src/cli.js service status
 node dist/src/cli.js run
 ```
 
-Install the per-user watchdog once before a long run:
+Install the per-user watchdog once before the first long run. `run` then
+durably queues the challenge with that watchdog and returns. Once it prints
+`You may close this terminal now`, closing the terminal is safe. The watchdog
+owns the first attempt as well as every quota or reboot resume. The dashboard
+becomes available at `http://127.0.0.1:4317` after the hidden game starts;
+follow startup and resume logs with:
 
 ```bash
-node dist/src/cli.js service install
-node dist/src/cli.js service status
+journalctl --user -u astra-parabox-watchdog.service -f
 ```
 
 The service starts with the user systemd manager and watches the single active run. A rebooted run resumes as soon as the user's runtime directory is available; it does not wait for niri or another physical compositor. If Codex reports a quota/rate-limit error, the watchdog uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`.
@@ -114,13 +120,20 @@ node dist/src/cli.js run --quota-wait-hours 5
 node dist/src/cli.js run --codex-home ~/.codex-official
 node dist/src/cli.js run --no-record
 node dist/src/cli.js run --browser
+node dist/src/cli.js run --foreground
 node dist/src/cli.js status
 node dist/src/cli.js resume runs/<run-id>
 node dist/src/cli.js cancel runs/<run-id>
 node dist/src/cli.js restore runs/<run-id>/save-recovery.json
 ```
 
-`Ctrl+C` pauses a run for manual inspection. `SIGTERM`, an unexpected runner death, or a reboot leaves it eligible for automatic restart. The active challenge timer excludes quota/reboot downtime and resumes from its checkpoint; the final summary also reports total wall time, inactive time, attempt count, and whether the run was `continuous` or `resumed`.
+The default background `run` is independent of its launching terminal. The
+diagnostic `run --foreground` variant remains attached, and `Ctrl+C` pauses that
+variant for manual inspection. `SIGTERM`, an unexpected runner death, or a
+reboot leaves the challenge eligible for automatic restart. The active
+challenge timer excludes quota/reboot downtime and resumes from its checkpoint;
+the final summary also reports total wall time, inactive time, attempt count,
+and whether the run was `continuous` or `resumed`.
 
 Run artifacts are written under `runs/` and ignored by Git. Interrupted recording parts remain independently playable; concatenate them only after completion. Each completed run ends with a SHA-256 manifest. Keep the raw artifacts next to the published video or release them separately; do not commit game frames or save files to this repository.
 

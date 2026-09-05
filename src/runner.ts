@@ -77,6 +77,25 @@ export interface RunOutcome {
 }
 
 export async function runChallenge(options: RunOptions): Promise<RunOutcome> {
+  const checkpoint = await initializeChallenge(options, false);
+  return await runAttempt(checkpoint);
+}
+
+export async function queueChallenge(options: RunOptions): Promise<RunOutcome> {
+  const checkpoint = await initializeChallenge(options, true);
+  const queued = checkpoint.snapshot();
+  return {
+    runDirectory: queued.runDirectory,
+    phase: queued.phase,
+    retryAt: queued.retryAt,
+    reason: queued.reason,
+  };
+}
+
+async function initializeChallenge(
+  options: RunOptions,
+  queued: boolean,
+): Promise<CheckpointStore> {
   const runId = createRunId();
   const runDirectory = path.resolve(
     options.output ?? path.join(options.rootDirectory, "runs", runId),
@@ -100,13 +119,13 @@ export async function runChallenge(options: RunOptions): Promise<RunOutcome> {
     runDirectory,
     createdAt: now,
     updatedAt: now,
-    phase: "starting",
+    phase: queued ? "waiting_retry" : "starting",
     attempt: 0,
-    pid: process.pid,
-    pidStartTicks: processStartTicks(),
+    pid: queued ? null : process.pid,
+    pidStartTicks: queued ? null : processStartTicks(),
     threadId: null,
-    retryAt: null,
-    reason: null,
+    retryAt: queued ? now : null,
+    reason: queued ? "Queued for the systemd watchdog" : null,
     savePrepared: false,
     elapsedMs: 0,
     startedAt: null,
@@ -145,8 +164,13 @@ export async function runChallenge(options: RunOptions): Promise<RunOutcome> {
     initialCheckpoint,
   );
   await checkpoint.update({});
+  if (queued) {
+    await audit.append("challenge.queued", {
+      supervisor: "astra-parabox-watchdog.service",
+    });
+  }
   await registerActiveRun(rootDirectory, runDirectory);
-  return await runAttempt(checkpoint);
+  return checkpoint;
 }
 
 export async function resumeChallenge(runDirectory: string): Promise<RunOutcome> {
