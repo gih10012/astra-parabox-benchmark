@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import {
   emptyTokenUsage,
   extractTokenUsage,
-  mergeUsage,
 } from "./codex-events.js";
 import { parseParaboxSave } from "./save-parser.js";
 import {
@@ -26,6 +25,7 @@ export class ChallengeState extends EventEmitter {
   #endedAtWall: number | null = null;
   #endedAtMono: bigint | null = null;
   #usage: TokenUsage = emptyTokenUsage();
+  #providerTokenCursor: TokenUsage = emptyTokenUsage();
   #tokenSource: TokenSnapshot["source"] = "none";
   #progress: LevelProgress = { total: 0, unlocked: 0, completed: 0 };
   #failure: string | null = null;
@@ -45,6 +45,7 @@ export class ChallengeState extends EventEmitter {
       elapsedMs: number;
       startedAt: string | null;
       tokens: TokenUsage;
+      providerTokenCursor?: TokenUsage | null;
       progress: LevelProgress;
     },
   ): void {
@@ -58,6 +59,9 @@ export class ChallengeState extends EventEmitter {
     this.#elapsedBeforeMs = Math.max(0, resume?.elapsedMs ?? 0);
     if (resume) {
       this.#usage = { ...resume.tokens };
+      this.#providerTokenCursor = {
+        ...(resume.providerTokenCursor ?? emptyTokenUsage()),
+      };
       this.#progress = { ...resume.progress };
     }
     this.emit("change", this.snapshot());
@@ -66,9 +70,16 @@ export class ChallengeState extends EventEmitter {
   ingestCodexEvent(event: unknown): void {
     const extracted = extractTokenUsage(event);
     if (!extracted) return;
-    const merged = mergeUsage(this.#usage, extracted.usage);
-    if (merged === this.#usage) return;
-    this.#usage = merged;
+    const next = extracted.usage;
+    const reset = next.totalTokens < this.#providerTokenCursor.totalTokens;
+    const delta = reset
+      ? next
+      : subtractUsage(next, this.#providerTokenCursor);
+    this.#providerTokenCursor = reset
+      ? { ...next }
+      : maximumUsage(this.#providerTokenCursor, next);
+    if (delta.totalTokens === 0) return;
+    this.#usage = addUsage(this.#usage, delta);
     this.#tokenSource = extracted.source;
     this.emit("change", this.snapshot());
   }
@@ -173,6 +184,10 @@ export class ChallengeState extends EventEmitter {
     };
   }
 
+  providerTokenCursorSnapshot(): TokenUsage {
+    return { ...this.#providerTokenCursor };
+  }
+
   snapshot(): ChallengeSnapshot {
     return {
       runId: this.#runId,
@@ -186,4 +201,44 @@ export class ChallengeState extends EventEmitter {
       failure: this.#failure,
     };
   }
+}
+
+function subtractUsage(next: TokenUsage, current: TokenUsage): TokenUsage {
+  return {
+    inputTokens: Math.max(0, next.inputTokens - current.inputTokens),
+    cachedInputTokens: Math.max(
+      0,
+      next.cachedInputTokens - current.cachedInputTokens,
+    ),
+    outputTokens: Math.max(0, next.outputTokens - current.outputTokens),
+    reasoningOutputTokens: Math.max(
+      0,
+      next.reasoningOutputTokens - current.reasoningOutputTokens,
+    ),
+    totalTokens: Math.max(0, next.totalTokens - current.totalTokens),
+  };
+}
+
+function maximumUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  return {
+    inputTokens: Math.max(left.inputTokens, right.inputTokens),
+    cachedInputTokens: Math.max(left.cachedInputTokens, right.cachedInputTokens),
+    outputTokens: Math.max(left.outputTokens, right.outputTokens),
+    reasoningOutputTokens: Math.max(
+      left.reasoningOutputTokens,
+      right.reasoningOutputTokens,
+    ),
+    totalTokens: Math.max(left.totalTokens, right.totalTokens),
+  };
+}
+
+function addUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    reasoningOutputTokens:
+      left.reasoningOutputTokens + right.reasoningOutputTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+  };
 }

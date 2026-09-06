@@ -21,7 +21,7 @@ test("uses monotonic time and completes only at the exact target catalog", () =>
   assert.equal(state.snapshot().progress.completed, 3);
 });
 
-test("tracks the largest cumulative token sample across event formats", () => {
+test("adds provider counters across turns without double-counting samples", () => {
   const state = new ChallengeState();
   state.ingestCodexEvent({
     type: "event_msg",
@@ -38,7 +38,7 @@ test("tracks the largest cumulative token sample across event formats", () => {
       },
     },
   });
-  state.ingestCodexEvent({
+  const completedTurn = {
     type: "turn.completed",
     usage: {
       input_tokens: 50,
@@ -46,15 +46,17 @@ test("tracks the largest cumulative token sample across event formats", () => {
       output_tokens: 10,
       reasoning_output_tokens: 2,
     },
-  });
+  };
+  state.ingestCodexEvent(completedTurn);
+  state.ingestCodexEvent(completedTurn);
   const snapshot = state.tokenSnapshot();
   assert.deepEqual(snapshot, {
-    inputTokens: 100,
-    cachedInputTokens: 40,
-    outputTokens: 20,
-    reasoningOutputTokens: 8,
-    totalTokens: 120,
-    source: "rollout",
+    inputTokens: 150,
+    cachedInputTokens: 50,
+    outputTokens: 30,
+    reasoningOutputTokens: 10,
+    totalTokens: 180,
+    source: "exec",
     sampledAt: snapshot.sampledAt,
   });
 });
@@ -77,6 +79,52 @@ test("restores cumulative metrics when a run resumes", () => {
   assert.equal(state.timeSnapshot().startedAt, "1970-01-01T00:00:01.000Z");
   assert.equal(state.tokenSnapshot().totalTokens, 100);
   assert.equal(state.snapshot().progress.completed, 1);
+});
+
+test("continues from a persisted provider token cursor", () => {
+  const state = new ChallengeState();
+  state.start("run", 10_000, 20_000_000_000n, {
+    elapsedMs: 0,
+    startedAt: "1970-01-01T00:00:01.000Z",
+    tokens: {
+      inputTokens: 900,
+      cachedInputTokens: 400,
+      outputTokens: 100,
+      reasoningOutputTokens: 50,
+      totalTokens: 1_000,
+    },
+    providerTokenCursor: {
+      inputTokens: 90,
+      cachedInputTokens: 40,
+      outputTokens: 10,
+      reasoningOutputTokens: 5,
+      totalTokens: 100,
+    },
+    progress: { total: 0, unlocked: 0, completed: 0 },
+  });
+  state.ingestCodexEvent({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 135,
+      cached_input_tokens: 60,
+      output_tokens: 15,
+      reasoning_output_tokens: 7,
+      total_tokens: 150,
+    },
+  });
+  assert.equal(state.tokenSnapshot().totalTokens, 1_050);
+  state.ingestCodexEvent({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 18,
+      cached_input_tokens: 8,
+      output_tokens: 2,
+      reasoning_output_tokens: 1,
+      total_tokens: 20,
+    },
+  });
+  assert.equal(state.tokenSnapshot().totalTokens, 1_070);
+  assert.equal(state.providerTokenCursorSnapshot().totalTokens, 20);
 });
 
 test("pauses quota time and resumes the same state with a new attempt", () => {

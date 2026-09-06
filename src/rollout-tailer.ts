@@ -5,6 +5,7 @@ import path from "node:path";
 export class RolloutTailer {
   readonly threadId: string;
   readonly sessionsRoot: string;
+  readonly sinceMs: number;
   #stopped = false;
   #filename: string | null = null;
   #offset = 0;
@@ -13,9 +14,11 @@ export class RolloutTailer {
   constructor(
     threadId: string,
     sessionsRoot = path.join(os.homedir(), ".codex/sessions"),
+    sinceMs = 0,
   ) {
     this.threadId = threadId;
     this.sessionsRoot = sessionsRoot;
+    this.sinceMs = sinceMs;
   }
 
   stop(): void {
@@ -42,7 +45,15 @@ export class RolloutTailer {
           for (const line of lines) {
             if (!line.trim()) continue;
             try {
-              await onEvent(JSON.parse(line), line);
+              const event = JSON.parse(line) as Record<string, unknown>;
+              const timestamp =
+                typeof event.timestamp === "string"
+                  ? Date.parse(event.timestamp)
+                  : Number.NaN;
+              if (Number.isFinite(timestamp) && timestamp < this.sinceMs) {
+                continue;
+              }
+              await onEvent(event, line);
             } catch {
               // An incomplete or unknown event does not stop telemetry.
             }

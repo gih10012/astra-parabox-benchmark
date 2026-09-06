@@ -44,6 +44,7 @@ export interface RunCheckpoint {
   elapsedMs: number;
   startedAt: string | null;
   tokens: TokenUsage;
+  tokenCursor?: TokenUsage | null;
   progress: LevelProgress;
   recordings: string[];
   options: PersistedRunOptions;

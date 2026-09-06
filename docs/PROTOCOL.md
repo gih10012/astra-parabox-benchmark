@@ -29,7 +29,7 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 
 - Exactly one active run is registered under `.arena/active-run.json`.
 - `checkpoint.json` and the latest challenge save are atomically replaced and synced every five seconds while the model is active.
-- The checkpoint includes the Codex thread ID, attempt number, cumulative active time, cumulative token sample, referee progress, retry time, and recording-part list. It never contains the arena control token or Codex credentials.
+- The checkpoint includes the Codex thread ID, attempt number, cumulative active time, cumulative token totals, the last provider token cursor, referee progress, retry time, and recording-part list. It never contains the arena control token or Codex credentials.
 - Quota and rate-limit errors enter `waiting_quota`. The retry uses Codex's machine-readable `resets_at` for the exhausted 5-hour or weekly window, plus a one-minute margin. If multiple windows are exhausted, it uses the later reset. Five hours is the fallback only when no valid future timestamp is available.
 - A quota retry retains the live hidden game and controller. Recording and active timing stop at the boundary; the next part resumes the same process after the absolute reset deadline. If the computer was suspended past that deadline, the next wake poll continues immediately.
 - At 3% battery or lower while discharging, the runner enters `waiting_power`, checkpoints the game save and a compositor frame, and stops active timing/recording. Connecting external power or recovering above 3% resumes the retained process. Boot recovery observes the same gate before launching.
@@ -44,7 +44,7 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 - The timer freezes on the first referee sample showing 364/364. Setup, teardown, video finalization, and original-save restoration are excluded.
 - Active elapsed time sums only intervals in which an attempt has reached the ready game/controller/recorder boundary and Codex is running. Quota, power, suspend and reboot downtime, and recovery setup are excluded.
 - The final summary separately reports wall elapsed time and inactive elapsed time. Only an attempt count of one is classified as `continuous`; any recovered run is classified as `resumed`.
-- Token usage is read from Codex's cumulative `token_count.info.total_token_usage` rollout events during the turn and reconciled with final `turn.completed.usage` from `codex exec --json`.
+- Token usage is read from Codex's `token_count.info.total_token_usage` rollout events during each turn and reconciled with final `turn.completed.usage` from `codex exec --json`. Codex resets that provider counter for a new turn, so the runner persists its last provider cursor and adds only deltas to the challenge-wide total. Old rollout events replayed while attaching to an existing thread are timestamp-filtered and never counted again.
 - `totalTokens` uses Codex's reported total. Cached input is reported separately and is not added a second time. Reasoning output is reported separately as the provider's breakdown.
 - A mid-run token query is necessarily a slightly stale sample and cannot include the tokens used to emit that same query. The final summary is authoritative.
 

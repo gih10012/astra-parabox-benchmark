@@ -114,7 +114,7 @@ Defaults:
 - skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
 - quota retry: reported reset time + 1 minute; 5-hour fallback
 - low-battery pause: 3% while discharging; resume on safe battery or external power
-- crash checkpoint: cumulative time, tokens, thread ID, progress, and game save every 5 seconds
+- crash checkpoint: cumulative time/tokens, provider token cursor, thread ID, progress, and game save every 5 seconds
 
 Useful variants:
 

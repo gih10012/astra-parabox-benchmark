@@ -145,6 +145,7 @@ async function initializeChallenge(
     elapsedMs: 0,
     startedAt: null,
     tokens: emptyTokenUsage(),
+    tokenCursor: null,
     progress: { total: 0, unlocked: 0, completed: 0 },
     recordings: [],
     options: persistedOptions,
@@ -477,6 +478,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         elapsedMs: prior.elapsedMs,
         startedAt: prior.startedAt,
         tokens: prior.tokens,
+        providerTokenCursor: prior.tokenCursor ?? prior.tokens,
         progress: prior.progress,
       });
       state.pause(pausedAtWall, pausedAtMono);
@@ -554,6 +556,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         elapsedMs: prior.elapsedMs,
         startedAt: prior.startedAt,
         tokens: prior.tokens,
+        providerTokenCursor: prior.tokenCursor ?? prior.tokens,
         progress: prior.progress,
       });
       await startRecording(attempt);
@@ -615,6 +618,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
             reasoningEffort: prior.options.reasoningEffort,
             ...(currentThreadId ? { resumeThreadId: currentThreadId } : {}),
           });
+          const codexStartedAtMs = Date.now();
           await writeFile(
             path.join(runDirectory, `codex-command-part-${part}.json`),
             `${JSON.stringify({ command: CODEX_COMMAND, args: redactControlToken(args) }, null, 2)}\n`,
@@ -665,7 +669,11 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
                 await checkpointStore.update({ threadId: root.thread_id });
                 for (const activeTailer of tailers) activeTailer.stop();
                 tailers.clear();
-                const tailer = new RolloutTailer(root.thread_id, sessionsRoot);
+                const tailer = new RolloutTailer(
+                  root.thread_id,
+                  sessionsRoot,
+                  codexStartedAtMs,
+                );
                 tailers.add(tailer);
                 const tailerTask = tailer.follow(async (rolloutEvent, raw) => {
                   inspectEvent(rolloutEvent);
@@ -906,6 +914,9 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
         ? snapshot.time.startedAt ?? prior.startedAt
         : prior.startedAt,
       tokens: attemptStarted ? snapshot.tokens : prior.tokens,
+      tokenCursor: attemptStarted
+        ? state.providerTokenCursorSnapshot()
+        : prior.tokenCursor ?? prior.tokens,
       progress: attemptStarted ? snapshot.progress : prior.progress,
     });
     await checkpointStore.flush();
@@ -1067,6 +1078,7 @@ async function persistAttemptCheckpoint(
     elapsedMs: snapshot.time.elapsedMs,
     startedAt: snapshot.time.startedAt,
     tokens: snapshot.tokens,
+    tokenCursor: state.providerTokenCursorSnapshot(),
     progress: snapshot.progress,
   });
   if (saveGuard) await saveGuard.checkpointChallenge();
