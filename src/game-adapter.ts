@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { expectCommand, runCommand } from "./command.js";
 import {
@@ -161,6 +161,10 @@ export class X11GameAdapter implements GameAdapter {
   readonly frameDirectory: string;
   readonly keypressCommand: string;
   readonly titlePattern: RegExp;
+  readonly compositorScreenshot: {
+    command: string;
+    environment: NodeJS.ProcessEnv;
+  } | undefined;
   #window: NiriWindow | null = null;
   #captureCounter = 0;
   #serial: Promise<unknown> = Promise.resolve();
@@ -170,11 +174,16 @@ export class X11GameAdapter implements GameAdapter {
     frameDirectory: string;
     keypressCommand: string;
     titlePattern?: RegExp;
+    compositorScreenshot?: {
+      command: string;
+      environment: NodeJS.ProcessEnv;
+    };
   }) {
     this.display = options.display;
     this.frameDirectory = options.frameDirectory;
     this.keypressCommand = options.keypressCommand;
     this.titlePattern = options.titlePattern ?? /Patrick'?s Parabox|steam_app_1260520/i;
+    this.compositorScreenshot = options.compositorScreenshot;
   }
 
   async discover(): Promise<{ windowId: number; title: string }> {
@@ -218,30 +227,38 @@ export class X11GameAdapter implements GameAdapter {
       const window = this.#window ?? (await this.#discoverWindow());
       await mkdir(this.frameDirectory, { recursive: true });
       const number = String(++this.#captureCounter).padStart(8, "0");
+      const pngPath = path.join(this.frameDirectory, `${number}.png`);
       const jpegPath = path.join(this.frameDirectory, `${number}.jpg`);
-      await expectCommand("ffmpeg", [
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-y",
-        "-f",
-        "x11grab",
-        "-draw_mouse",
-        "0",
-        "-framerate",
-        "30",
-        "-window_id",
-        String(window.id),
-        "-i",
-        `${this.display}.0`,
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale='min(1280,iw)':-2",
-        "-q:v",
-        "3",
-        jpegPath,
-      ], { timeoutMs: 10_000 });
+      if (this.compositorScreenshot) {
+        await expectCommand(
+          this.compositorScreenshot.command,
+          ["screenshot", pngPath],
+          { env: this.compositorScreenshot.environment, timeoutMs: 10_000 },
+        );
+        await waitForStableFile(pngPath, 10_000);
+        await expectCommand("ffmpeg", [
+          "-nostdin", "-loglevel", "error", "-y",
+          "-i", pngPath,
+          "-frames:v", "1",
+          "-vf", "scale='min(1280,iw)':-2",
+          "-q:v", "3",
+          jpegPath,
+        ], { timeoutMs: 10_000 });
+        await rm(pngPath, { force: true });
+      } else {
+        await expectCommand("ffmpeg", [
+          "-nostdin", "-loglevel", "error", "-y",
+          "-f", "x11grab",
+          "-draw_mouse", "0",
+          "-framerate", "30",
+          "-window_id", String(window.id),
+          "-i", `${this.display}.0`,
+          "-frames:v", "1",
+          "-vf", "scale='min(1280,iw)':-2",
+          "-q:v", "3",
+          jpegPath,
+        ], { timeoutMs: 10_000 });
+      }
       const data = await readFile(jpegPath);
       return {
         data,
@@ -298,6 +315,18 @@ export class X11GameAdapter implements GameAdapter {
     );
     return await result;
   }
+}
+
+async function waitForStableFile(filename: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let previousSize = -1;
+  while (Date.now() < deadline) {
+    const size = await stat(filename).then((value) => value.size).catch(() => -1);
+    if (size > 0 && size === previousSize) return;
+    previousSize = size;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for compositor screenshot: ${filename}`);
 }
 
 const pixel = Buffer.from(

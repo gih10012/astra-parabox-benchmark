@@ -31,7 +31,10 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 - `checkpoint.json` and the latest challenge save are atomically replaced and synced every five seconds while the model is active.
 - The checkpoint includes the Codex thread ID, attempt number, cumulative active time, cumulative token sample, referee progress, retry time, and recording-part list. It never contains the arena control token or Codex credentials.
 - Quota and rate-limit errors enter `waiting_quota`. The retry uses Codex's machine-readable `resets_at` for the exhausted 5-hour or weekly window, plus a one-minute margin. If multiple windows are exhausted, it uses the later reset. Five hours is the fallback only when no valid future timestamp is available.
+- A quota retry retains the live hidden game and controller. Recording and active timing stop at the boundary; the next part resumes the same process after the absolute reset deadline. If the computer was suspended past that deadline, the next wake poll continues immediately.
+- At 3% battery or lower while discharging, the runner enters `waiting_power`, checkpoints the game save and a compositor frame, and stops active timing/recording. Connecting external power or recovering above 3% resumes the retained process. Boot recovery observes the same gate before launching.
 - A stale `running` checkpoint after process death or reboot becomes immediately eligible for watchdog recovery once the user's runtime directory is available. A physical compositor is not required.
+- Suspend retains exact in-memory game state. Reboot/power loss cannot retain Wine/GPU memory; it relaunches from the durable game save and resumes the same persisted Codex thread. The next recording part begins on the last durable compositor frame, keeps that frame visible while the hidden title screen is dismissed, and switches to live pixels only after save restoration. Only the first recording contains the title page.
 - `SIGINT` creates a manual `paused` state. `SIGTERM` creates an immediately retryable state for shutdown/service restart.
 - The original player saves remain in `save-backup/` throughout an incomplete run. A completed challenge archives the final challenge save and restores the originals.
 
@@ -39,7 +42,7 @@ The four `parabox` tools are pre-approved so an unattended run never blocks on a
 
 - The monotonic timer starts immediately before the `codex exec` process is spawned, after the clean game window, controller, two private virtual displays, and recorder are ready.
 - The timer freezes on the first referee sample showing 364/364. Setup, teardown, video finalization, and original-save restoration are excluded.
-- Active elapsed time sums only intervals in which an attempt has reached the ready game/controller/recorder boundary and Codex is running. Quota waits, reboot downtime, and recovery setup are excluded.
+- Active elapsed time sums only intervals in which an attempt has reached the ready game/controller/recorder boundary and Codex is running. Quota, power, suspend and reboot downtime, and recovery setup are excluded.
 - The final summary separately reports wall elapsed time and inactive elapsed time. Only an attempt count of one is classified as `continuous`; any recovered run is classified as `resumed`.
 - Token usage is read from Codex's cumulative `token_count.info.total_token_usage` rollout events during the turn and reconciled with final `turn.completed.usage` from `codex exec --json`.
 - `totalTokens` uses Codex's reported total. Cached input is reported separately and is not added a second time. Reasoning output is reported separately as the provider's breakdown.
@@ -54,7 +57,7 @@ Every run records:
 - raw `codex exec --json` events and incremental usage events;
 - dashboard/referee events and final summary;
 - recoverable original-save backup and completed challenge save;
-- one full-screen Matroska recording part per attempt; and
+- one 1920×1080 Matroska recording part per active attempt, with input timestamps regenerated from frame counts so suspend gaps cannot inflate duration; and
 - a SHA-256 manifest over all run artifacts.
 
 Run artifacts can contain copyrighted screenshots and private local state. Review them before public release. Publish hashes even when large or sensitive raw artifacts are withheld.

@@ -6,6 +6,7 @@ import test from "node:test";
 import { ChallengeState } from "../src/challenge-state.js";
 import { ArenaController } from "../src/controller.js";
 import { MockGameAdapter } from "../src/game-adapter.js";
+import type { GameFrame } from "../src/types.js";
 
 test("serves public metrics and protects game controls", async (context) => {
   const webRoot = await mkdtemp(path.join(os.tmpdir(), "arena-web-"));
@@ -13,6 +14,8 @@ test("serves public metrics and protects game controls", async (context) => {
     writeFile(path.join(webRoot, "index.html"), "ok"),
     writeFile(path.join(webRoot, "app.js"), ""),
     writeFile(path.join(webRoot, "styles.css"), ""),
+    writeFile(path.join(webRoot, "game.html"), ""),
+    writeFile(path.join(webRoot, "game.js"), ""),
   ]);
   const state = new ChallengeState();
   const game = new MockGameAdapter();
@@ -50,4 +53,36 @@ test("serves public metrics and protects game controls", async (context) => {
   }).then((response) => response.json());
   assert.equal(press.pressed, 2);
   assert.deepEqual(game.presses, [["UP", "LEFT"]]);
+});
+
+test("serves a durable holding frame before the live game is restored", async (context) => {
+  const webRoot = await mkdtemp(path.join(os.tmpdir(), "arena-web-"));
+  await Promise.all([
+    writeFile(path.join(webRoot, "index.html"), "ok"),
+    writeFile(path.join(webRoot, "app.js"), ""),
+    writeFile(path.join(webRoot, "styles.css"), ""),
+    writeFile(path.join(webRoot, "game.html"), ""),
+    writeFile(path.join(webRoot, "game.js"), ""),
+  ]);
+  const holdingData = Buffer.from("durable-snapshot");
+  const holdingFrame: GameFrame = {
+    data: holdingData,
+    mimeType: "image/jpeg",
+    sha256: "holding-frame",
+    capturedAt: "2026-09-07T00:00:00.000Z",
+  };
+  const liveData = Buffer.from("restored-live-frame");
+  const controller = new ArenaController({
+    state: new ChallengeState(),
+    game: new MockGameAdapter(),
+    initialFrame: holdingFrame,
+    port: 0,
+    webRoot,
+  });
+  const url = await controller.listen();
+  context.after(() => controller.close());
+
+  assert.equal(await fetch(`${url}/api/frame`).then((response) => response.text()), "durable-snapshot");
+  controller.publishFrame({ ...holdingFrame, data: liveData, sha256: "live-frame" });
+  assert.equal(await fetch(`${url}/api/frame`).then((response) => response.text()), "restored-live-frame");
 });

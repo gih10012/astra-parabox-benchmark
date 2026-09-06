@@ -12,7 +12,9 @@
 
 ## During the take
 
-The runner opens the native game inside Gamescope's headless backend and the compact director dashboard inside Xvfb, then FFmpeg captures and combines only those two private X displays. It opens nothing on niri or any other physical compositor by default. The controller logs a loopback dashboard URL that the operator may open manually; `--browser` is the explicit opt-in to open it automatically. Do not interact after the timer starts. Infrastructure recovery is allowed only through the recorded watchdog path; human gameplay makes the run invalid.
+The runner opens the native game inside Gamescope's headless backend. Gamescope compositor screenshots feed a game-only mirror in private Xvfb, and the compact director dashboard occupies a second private Xvfb display. FFmpeg combines only those two displays. It opens nothing on niri or any other physical compositor by default. The controller logs a loopback dashboard URL that the operator may open manually; `--browser` is the explicit opt-in to open it automatically. Do not interact after the timer starts. Infrastructure recovery is allowed only through the recorded watchdog path; human gameplay makes the run invalid.
+
+The initial recording starts on the real title page before any Enter key is sent. Later quota/power parts resume the retained process directly. After a cold reboot, a holding copy of the last compositor snapshot is recorded while the relaunched game restores its save behind the mirror; the mirror switches to live pixels only after the hidden title page has been dismissed. The persisted Codex `thread_id`, cumulative timer, and token counters resume with that same boundary, so a title page is never introduced into a later part.
 
 The director dashboard shows:
 
@@ -29,7 +31,7 @@ The dashboard does not send commands and is not visible to the model.
 1. Confirm `summary.json` says `completed`, `364/364`, and `savesRestored: true`; disclose its `continuous` or `resumed` classification.
 2. Run the test suite again at the exact commit used for the challenge.
 3. Verify `manifest.sha256.json` against the artifacts.
-4. Concatenate the ordered `recordings/challenge-part-*.mkv` files, then transcode the result to the platform delivery format; retain every original part.
+4. Concatenate the ordered `recordings/challenge-part-*.mkv` files, then transcode the result to the platform delivery format; retain every original part. New parts start at PTS zero and use the same 30 FPS H.264 format. If a legacy part predates frame-count timestamp regeneration, use its non-destructive repaired-timeline copy documented beside the recordings.
 5. Put the repository commit SHA, model, effort, Codex version, timer, token breakdown, prompt, and artifact manifest hash in the video description.
 6. Review raw logs, save files, browser profile, and frames before publishing. Do not upload credentials, local paths that reveal private information, or proprietary game data beyond footage permitted by the rights holder/platform.
 

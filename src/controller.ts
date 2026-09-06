@@ -15,6 +15,7 @@ const publicRoot = path.resolve(
 interface ControllerOptions {
   state: ChallengeState;
   game: GameAdapter;
+  initialFrame?: GameFrame;
   host?: string;
   port?: number;
   webRoot?: string;
@@ -48,6 +49,7 @@ export class ArenaController {
     this.webRoot = options.webRoot ?? publicRoot;
     this.controlToken =
       options.controlToken ?? randomBytes(24).toString("base64url");
+    this.#frame = options.initialFrame ?? null;
     this.state.on("change", (snapshot) => {
       this.broadcast("state", snapshot);
     });
@@ -101,6 +103,14 @@ export class ArenaController {
     this.transcript.push(record);
     if (this.transcript.length > 1_000) this.transcript.shift();
     this.broadcast("transcript", record);
+  }
+
+  publishFrame(frame: GameFrame): void {
+    this.#frame = frame;
+    this.broadcast("frame", {
+      sha256: frame.sha256,
+      capturedAt: frame.capturedAt,
+    });
   }
 
   broadcast(name: string, data: unknown): void {
@@ -160,12 +170,9 @@ export class ArenaController {
     }
     if (request.method === "POST" && url.pathname === "/internal/observe") {
       this.#authorize(request);
-      this.#frame = await this.game.capture();
-      this.broadcast("frame", {
-        sha256: this.#frame.sha256,
-        capturedAt: this.#frame.capturedAt,
-      });
-      json(response, 200, serializeFrame(this.#frame));
+      const frame = await this.game.capture();
+      this.publishFrame(frame);
+      json(response, 200, serializeFrame(frame));
       return;
     }
     if (request.method === "POST" && url.pathname === "/internal/press") {
@@ -175,13 +182,16 @@ export class ArenaController {
       const intervalMs = boundedInteger(body.intervalMs, 0, 1_000, 55);
       const settleMs = boundedInteger(body.settleMs, 0, 2_000, 100);
       const capture = body.capture !== false;
-      await this.game.press(keys, { intervalMs, settleMs });
       if (capture) {
-        this.#frame = await this.game.capture();
-        this.broadcast("frame", {
-          sha256: this.#frame.sha256,
-          capturedAt: this.#frame.capturedAt,
-        });
+        for (let index = 0; index < keys.length; index++) {
+          await this.game.press([keys[index]!], {
+            intervalMs: 0,
+            settleMs: index + 1 === keys.length ? settleMs : intervalMs,
+          });
+          this.publishFrame(await this.game.capture());
+        }
+      } else {
+        await this.game.press(keys, { intervalMs, settleMs });
       }
       json(response, 200, {
         pressed: keys.length,
@@ -195,6 +205,8 @@ export class ArenaController {
       "/index.html": { name: "index.html", type: "text/html; charset=utf-8" },
       "/app.js": { name: "app.js", type: "text/javascript; charset=utf-8" },
       "/styles.css": { name: "styles.css", type: "text/css; charset=utf-8" },
+      "/game.html": { name: "game.html", type: "text/html; charset=utf-8" },
+      "/game.js": { name: "game.js", type: "text/javascript; charset=utf-8" },
     };
     const file = staticFiles[url.pathname];
     if (request.method === "GET" && file) {

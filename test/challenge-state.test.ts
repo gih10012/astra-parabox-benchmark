@@ -78,3 +78,17 @@ test("restores cumulative metrics when a run resumes", () => {
   assert.equal(state.tokenSnapshot().totalTokens, 100);
   assert.equal(state.snapshot().progress.completed, 1);
 });
+
+test("pauses quota time and resumes the same state with a new attempt", () => {
+  const state = new ChallengeState("gpt-6-astra", 364, 1);
+  state.start("run", 1_000, 1_000_000_000n);
+  state.pause(2_000, 2_000_000_000n);
+  assert.equal(state.timeSnapshot(12_000, 12_000_000_000n).elapsedMs, 1_000);
+  state.resume(2, 12_000, 12_000_000_000n);
+  const snapshot = state.snapshot();
+  assert.equal(snapshot.attempt, 2);
+  assert.equal(
+    state.timeSnapshot(13_000, 13_000_000_000n).elapsedMs,
+    2_000,
+  );
+});

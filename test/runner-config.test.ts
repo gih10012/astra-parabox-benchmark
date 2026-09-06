@@ -69,6 +69,8 @@ test("resumes the same Codex thread with the constrained continuation prompt", (
 test("recognizes common quota exhaustion errors without matching generic failures", () => {
   assert.equal(isQuotaError("unexpected status 429 Too Many Requests"), true);
   assert.equal(isQuotaError("You've hit your usage limit"), true);
+  assert.equal(isQuotaError("insufficient_quota"), true);
+  assert.equal(isQuotaError("quota snapshot saved successfully"), false);
   assert.equal(isQuotaError("connection reset by peer"), false);
 });
 

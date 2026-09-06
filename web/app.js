@@ -94,6 +94,48 @@ function addCode(container, label, value, className = "") {
   container.append(block);
 }
 
+function parseToolResultText(result) {
+  const content = Array.isArray(result?.content) ? result.content : [];
+  const text = content.find((entry) => entry?.type === "text")?.text;
+  if (typeof text !== "string") return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function conciseToolDetails(item) {
+  const parsed = parseToolResultText(item.result);
+  if (item.tool === "observe_game") {
+    return [
+      ["FRAME", parsed && typeof parsed === "object"
+        ? `${parsed.capturedAt || "captured"} · sha256 ${String(parsed.sha256 || "").slice(0, 16)}…`
+        : "Game frame captured"],
+      ["ERROR", item.error, "error-text"],
+    ];
+  }
+  if (item.tool === "press_keys") {
+    const keys = Array.isArray(item.arguments?.keys) ? item.arguments.keys : [];
+    const shown = keys.slice(0, 24).join(" ");
+    const suffix = keys.length > 24 ? ` … +${keys.length - 24}` : "";
+    const timing = [
+      item.arguments?.intervalMs === undefined ? null : `interval ${item.arguments.intervalMs}ms`,
+      item.arguments?.settleMs === undefined ? null : `settle ${item.arguments.settleMs}ms`,
+    ].filter(Boolean).join(" · ");
+    return [
+      ["KEYS", `${shown}${suffix}${timing ? `\n${timing}` : ""}`],
+      ["RESULT", parsed ?? item.result, "output"],
+      ["ERROR", item.error, "error-text"],
+    ];
+  }
+  return [
+    ["ARGS", item.arguments],
+    ["RESULT", parsed ?? item.result, "output"],
+    ["ERROR", item.error, "error-text"],
+  ];
+}
+
 function eventPresentation(event) {
   const item = event.item && typeof event.item === "object" ? event.item : null;
   const itemType = item?.type || "";
@@ -125,11 +167,7 @@ function eventPresentation(event) {
       label: "TOOL",
       kind: failed ? "error" : "tool",
       title: `${complete ? "Called" : "Calling"} ${name}`,
-      details: [
-        ["ARGS", item.arguments],
-        ["RESULT", item.result, "output"],
-        ["ERROR", item.error, "error-text"],
-      ],
+      details: conciseToolDetails(item),
     };
   }
   if (itemType === "error") {

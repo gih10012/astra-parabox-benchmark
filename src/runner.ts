@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
   access,
   mkdir,
   readFile,
   readdir,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -32,8 +34,10 @@ import {
   hiddenRecorderArguments,
   startVirtualDashboard,
   startVirtualGame,
+  startVirtualGameMirror,
   type VirtualDashboardRuntime,
   type VirtualGameRuntime,
+  type VirtualGameMirrorRuntime,
 } from "./headless-display.js";
 import { RolloutTailer } from "./rollout-tailer.js";
 import {
@@ -47,8 +51,18 @@ import {
   type RunPhase,
 } from "./run-checkpoint.js";
 import { SaveGuard } from "./save-guard.js";
+import {
+  powerAllowsResume,
+  readPowerState,
+  shouldSnapshotForLowBattery,
+  type PowerState,
+} from "./power.js";
 import { parseParaboxSave } from "./save-parser.js";
-import { TARGET_LEVELS, type LevelProgress } from "./types.js";
+import {
+  TARGET_LEVELS,
+  type GameFrame,
+  type LevelProgress,
+} from "./types.js";
 
 export const NEUTRAL_PROMPT =
   "Complete all 364 official levels in Patrick's Parabox. Use the Parabox tools for game observation and control. Do not search or browse the internet.";
@@ -155,7 +169,7 @@ async function initializeChallenge(
     saveIsolation: persistedOptions.isolateSaves,
     recording: persistedOptions.record,
     displayBackend: "gamescope-headless",
-    recordingBackend: "ffmpeg-x11grab",
+    recordingBackend: "gamescope-snapshot-mirror+ffmpeg-x11grab",
     physicalDesktopWindows: persistedOptions.openDashboard ? "monitor-only" : "none",
     resumable: true,
     quotaWaitMs: persistedOptions.quotaWaitMs,
@@ -239,25 +253,24 @@ export async function cancelChallenge(runDirectory: string): Promise<RunOutcome>
 
 async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome> {
   const prior = checkpointStore.snapshot();
-  const attempt = prior.attempt + 1;
-  const part = String(attempt).padStart(4, "0");
+  let attempt = prior.attempt + 1;
+  const initialPart = String(attempt).padStart(4, "0");
   const runDirectory = prior.runDirectory;
   const rootDirectory = prior.options.rootDirectory;
-  const frameDirectory = path.join(runDirectory, "frames", `part-${part}`);
-  const runtimeDirectory = path.join(runDirectory, "runtime", `part-${part}`);
+  const frameDirectory = path.join(runDirectory, "frames", `part-${initialPart}`);
+  const runtimeDirectory = path.join(runDirectory, "runtime", `part-${initialPart}`);
   const workDirectory = path.join(runDirectory, "workspace");
-  const recordingRelative = path.join("recordings", `challenge-part-${part}.mkv`);
-  const recordingPath = path.join(runDirectory, recordingRelative);
   const mcpEntry = path.join(rootDirectory, "dist/src/mcp.js");
   await access(mcpEntry);
   await mkdir(frameDirectory, { recursive: true });
   await mkdir(runtimeDirectory, { recursive: true });
   await mkdir(workDirectory, { recursive: true });
-  await mkdir(path.dirname(recordingPath), { recursive: true });
+  await mkdir(path.join(runDirectory, "recordings"), { recursive: true });
 
   const paths = defaultGamePaths();
   const audit = new AuditLog(runDirectory);
   const state = new ChallengeState("gpt-6-astra", TARGET_LEVELS, attempt);
+  const isColdResume = prior.attempt > 0;
   const saveGuard = new SaveGuard(paths.saveDirectory, runDirectory);
   const codexHome = prior.options.codexHome;
   const sessionsRoot = path.join(
@@ -281,11 +294,14 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   let controller: ArenaController | null = null;
   let virtualGame: VirtualGameRuntime | null = null;
   let virtualDashboard: VirtualDashboardRuntime | null = null;
+  let virtualGameMirror: VirtualGameMirrorRuntime | null = null;
+  let gameWindow: { windowId: number; title: string } | null = null;
   const tailers = new Set<RolloutTailer>();
   const tailerTasks = new Set<Promise<void>>();
   const eventTasks = new Set<Promise<void>>();
   let savePoll: NodeJS.Timeout | null = null;
   let checkpointPoll: NodeJS.Timeout | null = null;
+  let powerPoll: NodeJS.Timeout | null = null;
   const checkpointWork: { current: Promise<void> | null } = { current: null };
   let checkpointBusy = false;
   let restored = false;
@@ -293,9 +309,66 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   let quotaResetAtMs: number | null = null;
   let exitDescription = "Codex exited before completion";
   let requestedStop: "pause" | "restart" | null = null;
+  let powerPauseRequested = false;
+  let lastPowerState: PowerState | null = null;
+  let powerPauseReason = "Low battery; snapshot saved until wake or external power";
+  let powerCheckBusy = false;
   let outcomePhase: RunPhase = "waiting_retry";
   let retryAt: string | null = null;
   let reason: string | null = null;
+
+  const stopRecording = async () => {
+    const activeRecorder = recorder;
+    recorder = null;
+    if (activeRecorder?.exitCode === null) {
+      activeRecorder.kill("SIGINT");
+      await Promise.race([once(activeRecorder, "exit"), delay(5_000)]).catch(
+        () => undefined,
+      );
+    }
+  };
+
+  const startRecording = async (currentAttempt: number) => {
+    if (!prior.options.record || !virtualGameMirror || !virtualDashboard) {
+      return;
+    }
+    const currentPart = String(currentAttempt).padStart(4, "0");
+    const recordingRelative = path.join(
+      "recordings",
+      `challenge-part-${currentPart}.mkv`,
+    );
+    const recordingPath = path.join(runDirectory, recordingRelative);
+    recorder = spawn(
+      "ffmpeg",
+      hiddenRecorderArguments({
+        gameDisplay: virtualGameMirror.display,
+        dashboardDisplay: virtualDashboard.display,
+        output: recordingPath,
+      }),
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    recorder.stderr?.on("data", (chunk: Buffer) => {
+      void audit.appendRaw(
+        `recorder-part-${currentPart}.log`,
+        chunk.toString("utf8"),
+      );
+    });
+    await delay(1_000);
+    if (recorder.exitCode !== null) throw new Error("FFmpeg recorder exited early");
+    await checkpointStore.update((current) => ({
+      recordings: current.recordings.includes(recordingRelative)
+        ? current.recordings
+        : [...current.recordings, recordingRelative],
+    }));
+    await audit.append("recording.started", {
+      attempt: currentAttempt,
+      backend: "gamescope-snapshot-mirror+xvfb-x11grab",
+      dimensions: "1920x1080",
+      framesPerSecond: 30,
+      timestampMode: "frame-count",
+      filename: recordingRelative,
+    });
+  };
 
   const inspectDiagnostic = (text: string) => {
     if (isQuotaError(text)) quotaExhausted = true;
@@ -308,6 +381,29 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   };
   const stopCodex = () => {
     if (codex?.exitCode === null) codex.kill("SIGINT");
+  };
+  const checkPower = async () => {
+    if (powerCheckBusy) return;
+    powerCheckBusy = true;
+    try {
+      lastPowerState = await readPowerState();
+      if (
+        shouldSnapshotForLowBattery(lastPowerState) &&
+        !powerPauseRequested
+      ) {
+        powerPauseRequested = true;
+        const message = `Battery is ${lastPowerState.batteryPercent}%; preserving a snapshot until power returns.`;
+        powerPauseReason = `Battery at ${lastPowerState.batteryPercent}%; snapshot saved until wake or external power`;
+        controller?.publishTranscript({ type: "runner.power_pause", message });
+        await audit.append("power.low", {
+          ...lastPowerState,
+          thresholdPercent: 3,
+        });
+        stopCodex();
+      }
+    } finally {
+      powerCheckBusy = false;
+    }
   };
   const onInterrupt = () => {
     requestedStop = "pause";
@@ -345,9 +441,10 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       display: virtualGame.display,
       frameDirectory,
       keypressCommand: virtualGame.keypressCommand,
+      compositorScreenshot: virtualGame.compositorScreenshot,
     });
     game = activeGame;
-    const gameWindow = await waitForGame(
+    gameWindow = await waitForGame(
       activeGame,
       120_000,
       () => requestedStop !== null,
@@ -358,9 +455,25 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       display: virtualGame.display,
     });
 
+    const resumeFrame = isColdResume
+      ? await loadRuntimeSnapshot(runDirectory, prior.attempt)
+      : null;
+    if (isColdResume) {
+      const pausedAtWall = Date.now();
+      const pausedAtMono = process.hrtime.bigint();
+      state.start(prior.runId, pausedAtWall, pausedAtMono, {
+        elapsedMs: prior.elapsedMs,
+        startedAt: prior.startedAt,
+        tokens: prior.tokens,
+        progress: prior.progress,
+      });
+      state.pause(pausedAtWall, pausedAtMono);
+    }
+
     const activeController = new ArenaController({
       state,
       game: activeGame,
+      ...(resumeFrame ? { initialFrame: resumeFrame } : {}),
       port: prior.options.port,
       webRoot: path.join(rootDirectory, "web"),
     });
@@ -372,14 +485,16 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       type: "runner.ready",
       message: "Hidden game and challenge controller are ready.",
     });
-    await fetch(new URL("/internal/observe", url), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${activeController.controlToken}`,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
+    if (!isColdResume) {
+      await fetch(new URL("/internal/observe", url), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${activeController.controlToken}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+    }
 
     if (prior.options.openDashboard) {
       browser = spawn(
@@ -396,46 +511,41 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
     }
 
     if (prior.options.record) {
+      virtualGameMirror = await startVirtualGameMirror({
+        rootDirectory,
+        runtimeDirectory,
+        url,
+      });
       virtualDashboard = await startVirtualDashboard({
         rootDirectory,
         runtimeDirectory,
         url,
       });
-      recorder = spawn(
-        "ffmpeg",
-        hiddenRecorderArguments({
-          gameDisplay: virtualGame.display,
-          gameWindowId: gameWindow.windowId,
-          dashboardDisplay: virtualDashboard.display,
-          output: recordingPath,
-        }),
-        { stdio: ["ignore", "ignore", "pipe"] },
-      );
-      recorder.stderr?.on("data", (chunk: Buffer) => {
-        void audit.appendRaw(`recorder-part-${part}.log`, chunk.toString("utf8"));
-      });
-      await delay(1_000);
-      if (recorder.exitCode !== null) throw new Error("FFmpeg recorder exited early");
-      await checkpointStore.update((current) => ({
-        recordings: current.recordings.includes(recordingRelative)
-          ? current.recordings
-          : [...current.recordings, recordingRelative],
-      }));
-      await audit.append("recording.started", {
-        attempt,
-        backend: "gamescope-x11grab+xvfb-x11grab",
-        dimensions: "1920x1080",
-        framesPerSecond: 30,
-        filename: recordingRelative,
-      });
     }
 
-    state.start(prior.runId, Date.now(), process.hrtime.bigint(), {
-      elapsedMs: prior.elapsedMs,
-      startedAt: prior.startedAt,
-      tokens: prior.tokens,
-      progress: prior.progress,
-    });
+    if (isColdResume) {
+      await startRecording(attempt);
+      await delay(2_000);
+      await activeGame.press(["ENTER"], { intervalMs: 0, settleMs: 1_800 });
+      const restoredFrame = await activeGame.capture();
+      activeController.publishFrame(restoredFrame);
+      state.resume(attempt);
+      await audit.append("runtime.snapshot.restored", {
+        attempt,
+        method: "durable-save-and-codex-thread",
+        threadId: prior.threadId,
+        holdingFrame: resumeFrame !== null,
+        titleVisibleInRecording: false,
+      });
+    } else {
+      state.start(prior.runId, Date.now(), process.hrtime.bigint(), {
+        elapsedMs: prior.elapsedMs,
+        startedAt: prior.startedAt,
+        tokens: prior.tokens,
+        progress: prior.progress,
+      });
+      await startRecording(attempt);
+    }
     const finishPromise = once(state, "finished").then(
       ([snapshot]) => snapshot as ReturnType<ChallengeState["snapshot"]>,
     );
@@ -472,117 +582,242 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
             checkpointBusy = false;
           });
       }, 5_000);
-
-      const args = codexArguments({
-        mcpEntry,
-        arenaUrl: url,
-        controlToken: activeController.controlToken,
-        reasoningEffort: prior.options.reasoningEffort,
-        ...(prior.threadId ? { resumeThreadId: prior.threadId } : {}),
-      });
-      await writeFile(
-        path.join(runDirectory, `codex-command-part-${part}.json`),
-        `${JSON.stringify({ command: CODEX_COMMAND, args: redactControlToken(args) }, null, 2)}\n`,
-      );
-      codex = spawn(CODEX_COMMAND, args, {
-        cwd: workDirectory,
-        env: codexEnvironment(codexHome),
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const stderrStream = codex.stderr;
-      stderrStream?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8").trimEnd();
-        inspectDiagnostic(text);
-        void audit.appendRaw(`codex-stderr-part-${part}.log`, text);
-        for (const line of text.split(/\r?\n/).filter(Boolean)) {
-          activeController.publishTranscript({
-            type: "stderr",
-            message: line,
-          });
-        }
-      });
-      activeController.publishTranscript({
-        type: "process.started",
-        process: CODEX_COMMAND,
-      });
-
-      const stdoutLines = readline.createInterface({ input: codex.stdout! });
-      stdoutLines.on("line", (line) => {
-        const task = (async () => {
-          await audit.appendRaw("codex-exec.jsonl", line);
-          let event: unknown;
-          try {
-            event = JSON.parse(line);
-          } catch {
-            return;
-          }
-          inspectEvent(event);
-          state.ingestCodexEvent(event);
-          const visible = publicTranscriptEvent(event);
-          if (visible) activeController.publishTranscript(visible);
-          const root = event as Record<string, unknown>;
-          if (root.type === "error" || root.type === "turn.failed") {
-            inspectDiagnostic(line);
-          }
-          if (
-            root.type === "thread.started" &&
-            typeof root.thread_id === "string"
-          ) {
-            await checkpointStore.update({ threadId: root.thread_id });
-            for (const activeTailer of tailers) activeTailer.stop();
-            const tailer = new RolloutTailer(root.thread_id, sessionsRoot);
-            tailers.add(tailer);
-            const tailerTask = tailer.follow(async (rolloutEvent, raw) => {
-              inspectEvent(rolloutEvent);
-              state.ingestCodexEvent(rolloutEvent);
-              if (extractTokenUsage(rolloutEvent)) {
-                await audit.appendRaw("codex-usage.jsonl", raw);
-              }
-            });
-            tailerTasks.add(tailerTask);
-            void tailerTask
-              .catch(() => undefined)
-              .finally(() => tailerTasks.delete(tailerTask));
-          }
-        })();
-        eventTasks.add(task);
-        void task
-          .catch(() => undefined)
-          .finally(() => eventTasks.delete(task));
-      });
-
-      const exitPromise = once(codex, "exit").then(([code, signal]) => ({
-        code: typeof code === "number" ? code : null,
-        signal: typeof signal === "string" ? signal : null,
-      }));
-      void exitPromise.then((exit) => {
-        activeController.publishTranscript({
-          type: "process.exited",
-          process: CODEX_COMMAND,
-          ...exit,
+      await checkPower();
+      powerPoll = setInterval(() => {
+        void checkPower().catch((error: unknown) => {
+          void audit.append("power.warning", String(error));
         });
-      });
-      const first = await Promise.race([
-        exitPromise.then((exit) => ({ type: "exit" as const, exit })),
-        finishPromise.then((snapshot) => ({ type: "finish" as const, snapshot })),
-      ]);
-      if (first.type === "exit" && state.snapshot().status === "running") {
-        exitDescription = `Codex exited before completion (code=${first.exit.code}, signal=${first.exit.signal})`;
-        state.stop();
-      } else if (
-        first.type === "finish" &&
-        first.snapshot.status === "completed"
-      ) {
-        const exit = await Promise.race([
-          exitPromise,
-          delay(8_000).then(() => null),
-        ]);
-        if (!exit && codex.exitCode === null) codex.kill("SIGINT");
+      }, 5_000);
+
+      while (state.snapshot().status !== "completed" && requestedStop === null) {
+        quotaExhausted = false;
+        quotaResetAtMs = null;
+        exitDescription = "Codex exited before completion";
+        if (!powerPauseRequested) {
+          const part = String(attempt).padStart(4, "0");
+          const currentThreadId = checkpointStore.snapshot().threadId;
+          const args = codexArguments({
+            mcpEntry,
+            arenaUrl: url,
+            controlToken: activeController.controlToken,
+            reasoningEffort: prior.options.reasoningEffort,
+            ...(currentThreadId ? { resumeThreadId: currentThreadId } : {}),
+          });
+          await writeFile(
+            path.join(runDirectory, `codex-command-part-${part}.json`),
+            `${JSON.stringify({ command: CODEX_COMMAND, args: redactControlToken(args) }, null, 2)}\n`,
+          );
+          codex = spawn(CODEX_COMMAND, args, {
+            cwd: workDirectory,
+            env: codexEnvironment(codexHome),
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          const activeCodex = codex;
+          activeCodex.stderr?.on("data", (chunk: Buffer) => {
+            const text = chunk.toString("utf8").trimEnd();
+            inspectDiagnostic(text);
+            void audit.appendRaw(`codex-stderr-part-${part}.log`, text);
+            for (const line of text.split(/\r?\n/).filter(Boolean)) {
+              activeController.publishTranscript({ type: "stderr", message: line });
+            }
+          });
+          activeController.publishTranscript({
+            type: "process.started",
+            process: CODEX_COMMAND,
+            attempt,
+          });
+
+          const stdoutLines = readline.createInterface({ input: activeCodex.stdout! });
+          stdoutLines.on("line", (line) => {
+            const task = (async () => {
+              await audit.appendRaw("codex-exec.jsonl", line);
+              let event: unknown;
+              try {
+                event = JSON.parse(line);
+              } catch {
+                return;
+              }
+              inspectEvent(event);
+              state.ingestCodexEvent(event);
+              const visible = publicTranscriptEvent(event);
+              if (visible) activeController.publishTranscript(visible);
+              const root = event as Record<string, unknown>;
+              if (root.type === "error" || root.type === "turn.failed") {
+                inspectDiagnostic(line);
+              }
+              if (
+                root.type === "thread.started" &&
+                typeof root.thread_id === "string"
+              ) {
+                await checkpointStore.update({ threadId: root.thread_id });
+                for (const activeTailer of tailers) activeTailer.stop();
+                tailers.clear();
+                const tailer = new RolloutTailer(root.thread_id, sessionsRoot);
+                tailers.add(tailer);
+                const tailerTask = tailer.follow(async (rolloutEvent, raw) => {
+                  inspectEvent(rolloutEvent);
+                  state.ingestCodexEvent(rolloutEvent);
+                  if (extractTokenUsage(rolloutEvent)) {
+                    await audit.appendRaw("codex-usage.jsonl", raw);
+                  }
+                });
+                tailerTasks.add(tailerTask);
+                void tailerTask
+                  .catch(() => undefined)
+                  .finally(() => tailerTasks.delete(tailerTask));
+              }
+            })();
+            eventTasks.add(task);
+            void task
+              .catch(() => undefined)
+              .finally(() => eventTasks.delete(task));
+          });
+
+          const exitPromise = once(activeCodex, "exit").then(([code, signal]) => ({
+            code: typeof code === "number" ? code : null,
+            signal: typeof signal === "string" ? signal : null,
+          }));
+          void exitPromise.then((exit) => {
+            activeController.publishTranscript({
+              type: "process.exited",
+              process: CODEX_COMMAND,
+              ...exit,
+            });
+          });
+          const first = await Promise.race([
+            exitPromise.then((exit) => ({ type: "exit" as const, exit })),
+            finishPromise.then((snapshot) => ({ type: "finish" as const, snapshot })),
+          ]);
+          if (first.type === "exit" && state.snapshot().status === "running") {
+            exitDescription = `Codex exited before completion (code=${first.exit.code}, signal=${first.exit.signal})`;
+          } else if (
+            first.type === "finish" &&
+            first.snapshot.status === "completed"
+          ) {
+            const exit = await Promise.race([
+              exitPromise,
+              delay(8_000).then(() => null),
+            ]);
+            if (!exit && activeCodex.exitCode === null) activeCodex.kill("SIGINT");
+          }
+          if (activeCodex.exitCode === null) {
+            await Promise.race([exitPromise, delay(5_000)]);
+          }
+          await Promise.allSettled([...eventTasks]);
+          codex = null;
+        }
+        if (state.snapshot().status !== "completed") state.pause();
+        await stopRecording();
+
+        if (state.snapshot().status === "completed") break;
+        const runtimeFrame = await captureRuntimeSnapshot(
+          runDirectory,
+          attempt,
+          activeGame,
+          audit,
+        );
+        if (runtimeFrame) activeController.publishFrame(runtimeFrame);
+        await persistAttemptCheckpoint(
+          checkpointStore,
+          state,
+          prior.options.isolateSaves ? saveGuard : null,
+        );
+
+        if (requestedStop !== null) break;
+        outcomePhase = powerPauseRequested
+          ? "waiting_power"
+          : quotaExhausted
+            ? "waiting_quota"
+            : "waiting_retry";
+        retryAt = powerPauseRequested
+          ? null
+          : quotaExhausted
+            ? quotaRetryAt(Date.now(), prior.options.quotaWaitMs, quotaResetAtMs)
+            : new Date(Date.now() + retryDelayMs(attempt)).toISOString();
+        reason = powerPauseRequested ? powerPauseReason : exitDescription;
+        const waitingSnapshot = state.snapshot();
+        await checkpointStore.update({
+          phase: outcomePhase,
+          pid: process.pid,
+          pidStartTicks: processStartTicks(),
+          retryAt,
+          reason,
+          elapsedMs: waitingSnapshot.time.elapsedMs,
+          startedAt: waitingSnapshot.time.startedAt,
+          tokens: waitingSnapshot.tokens,
+          progress: waitingSnapshot.progress,
+        });
+        await audit.append("attempt.finished", {
+          attempt,
+          phase: outcomePhase,
+          retryAt,
+          reason,
+          runtimePreserved: true,
+          snapshot: waitingSnapshot,
+        });
+        activeController.publishTranscript({
+          type: "runner.waiting",
+          phase: outcomePhase,
+          retryAt,
+          message: powerPauseRequested
+            ? "Game snapshot preserved; Codex will resume when power is safe."
+            : `Game snapshot preserved; Codex will resume at ${retryAt}.`,
+        });
+
+        if (!powerPauseRequested && retryAt) {
+          await waitUntil(
+            Date.parse(retryAt),
+            () => requestedStop !== null || powerPauseRequested,
+          );
+        }
+        await checkPower();
+        if (powerPauseRequested && requestedStop === null) {
+          outcomePhase = "waiting_power";
+          retryAt = null;
+          reason = powerPauseReason;
+          await checkpointStore.update({
+            phase: outcomePhase,
+            retryAt,
+            reason,
+          });
+          activeController.publishTranscript({
+            type: "runner.waiting",
+            phase: outcomePhase,
+            retryAt,
+            message: "Game snapshot preserved; Codex will resume when power is safe.",
+          });
+          await waitForPower(() => requestedStop !== null);
+        }
+        if (requestedStop !== null) break;
+        const resumedFromPower = powerPauseRequested;
+        powerPauseRequested = false;
+        attempt += 1;
+        await startRecording(attempt);
+        state.resume(attempt);
+        retryAt = null;
+        reason = null;
+        await checkpointStore.update({
+          phase: "running",
+          attempt,
+          pid: process.pid,
+          pidStartTicks: processStartTicks(),
+          retryAt: null,
+          reason: null,
+        });
+        await audit.append("challenge.resumed", {
+          attempt,
+          threadId: checkpointStore.snapshot().threadId,
+          method: "preserved-live-runtime",
+          snapshot: state.snapshot(),
+        });
+        activeController.publishTranscript({
+          type: "runner.resumed",
+          message: resumedFromPower
+            ? "Power is safe; continuing the preserved game runtime."
+            : "Quota/reset wait ended; continuing the preserved game runtime.",
+          attempt,
+        });
       }
-      if (codex.exitCode === null) {
-        await Promise.race([exitPromise, delay(5_000)]);
-      }
-      await Promise.allSettled([...eventTasks]);
     }
     if (state.snapshot().status === "completed") {
       outcomePhase = "completed";
@@ -593,18 +828,12 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
       outcomePhase = "waiting_retry";
       retryAt = new Date().toISOString();
       reason = "Interrupted by shutdown or service restart";
-    } else if (quotaExhausted) {
-      outcomePhase = "waiting_quota";
-      retryAt = quotaRetryAt(
-        Date.now(),
-        prior.options.quotaWaitMs,
-        quotaResetAtMs,
-      );
-      reason = exitDescription;
     } else {
-      outcomePhase = "waiting_retry";
-      retryAt = new Date(Date.now() + retryDelayMs(attempt)).toISOString();
-      reason = exitDescription;
+      outcomePhase = state.snapshot().status === "stopped"
+        ? outcomePhase
+        : "waiting_retry";
+      retryAt ??= new Date(Date.now() + retryDelayMs(attempt)).toISOString();
+      reason ??= exitDescription;
     }
   } catch (error) {
     if (state.snapshot().status === "running") state.stop();
@@ -628,17 +857,16 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
     await Promise.allSettled([...tailerTasks]);
     if (savePoll) clearInterval(savePoll);
     if (checkpointPoll) clearInterval(checkpointPoll);
+    if (powerPoll) clearInterval(powerPoll);
     if (checkpointWork.current) {
       await checkpointWork.current.catch(() => undefined);
     }
     if (codex?.exitCode === null) codex.kill("SIGINT");
-    if (recorder?.exitCode === null) {
-      recorder.kill("SIGINT");
-      await Promise.race([once(recorder, "exit"), delay(5_000)]).catch(() => undefined);
-    }
+    await stopRecording();
     await game?.close().catch(() => undefined);
     await delay(500);
     browser?.kill("SIGTERM");
+    await virtualGameMirror?.close().catch(() => undefined);
     await virtualDashboard?.close().catch(() => undefined);
     await virtualGame?.close().catch(() => undefined);
     await controller?.close().catch(() => undefined);
@@ -831,8 +1059,82 @@ async function persistAttemptCheckpoint(
   if (saveGuard) await saveGuard.checkpointChallenge();
 }
 
+async function captureRuntimeSnapshot(
+  runDirectory: string,
+  attempt: number,
+  game: X11GameAdapter,
+  audit: AuditLog,
+): Promise<GameFrame | null> {
+  const directory = path.join(runDirectory, "snapshots");
+  const filename = path.join(
+    directory,
+    `attempt-${String(attempt).padStart(4, "0")}.jpg`,
+  );
+  try {
+    await mkdir(directory, { recursive: true });
+    const frame = await game.capture();
+    await writeFile(filename, frame.data);
+    await audit.append("runtime.snapshot.created", {
+      attempt,
+      filename: path.relative(runDirectory, filename),
+      sha256: frame.sha256,
+      capturedAt: frame.capturedAt,
+    });
+    return frame;
+  } catch (error) {
+    await audit.append("runtime.snapshot.warning", {
+      attempt,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function loadRuntimeSnapshot(
+  runDirectory: string,
+  attempt: number,
+): Promise<GameFrame | null> {
+  for (let candidate = attempt; candidate >= 1; candidate -= 1) {
+    const filename = path.join(
+      runDirectory,
+      "snapshots",
+      `attempt-${String(candidate).padStart(4, "0")}.jpg`,
+    );
+    try {
+      const [data, metadata] = await Promise.all([readFile(filename), stat(filename)]);
+      return {
+        data,
+        mimeType: "image/jpeg",
+        width: 1280,
+        height: 1080,
+        sha256: createHash("sha256").update(data).digest("hex"),
+        capturedAt: metadata.mtime.toISOString(),
+      };
+    } catch {
+      // Older attempts may predate durable frame snapshots.
+    }
+  }
+  return null;
+}
+
+async function waitUntil(
+  deadlineMs: number,
+  cancelled: () => boolean,
+): Promise<void> {
+  while (!cancelled() && Date.now() < deadlineMs) {
+    await delay(Math.min(1_000, Math.max(1, deadlineMs - Date.now())));
+  }
+}
+
+async function waitForPower(cancelled: () => boolean): Promise<void> {
+  while (!cancelled()) {
+    if (powerAllowsResume(await readPowerState())) return;
+    await delay(1_000);
+  }
+}
+
 export function isQuotaError(text: string): boolean {
-  return /(?:\b429\b|rate[_ -]?limit|usage limit|quota|too many requests|insufficient_quota|limit has been reached)/i.test(
+  return /(?:\b429\b|rate[_ -]?limit|usage limit|too many requests|insufficient_quota|limit has been reached|you(?:'ve| have) hit (?:your )?[^\n]*limit)/i.test(
     text,
   );
 }

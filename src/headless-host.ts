@@ -15,7 +15,9 @@ if (!values.DISPLAY || !values.GAMESCOPE_WAYLAND_DISPLAY) {
 }
 await writeFile(output, `${JSON.stringify(values, null, 2)}\n`, { mode: 0o600 });
 
+const keepAlive = setInterval(() => undefined, 60_000);
 await new Promise<void>((resolve) => {
   process.once("SIGINT", resolve);
   process.once("SIGTERM", resolve);
 });
+clearInterval(keepAlive);

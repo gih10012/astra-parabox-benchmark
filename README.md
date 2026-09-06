@@ -8,7 +8,7 @@ The model receives one neutral task sentence, rendered game frames, keyboard act
 
 ## Why this architecture
 
-The native game window remains the sole source of truth. It runs on an isolated Gamescope headless display, where a local MCP bridge captures that window and sends keyboard events. A separate Chrome instance renders the director dashboard inside Xvfb. Neither window is mapped to the operator's physical desktop.
+The native game window remains the sole source of truth. It runs on an isolated Gamescope headless display, where a local MCP bridge requests compositor screenshots and sends keyboard events. The latest lossless compositor view is mirrored into one private Xvfb display, while a separate Chrome instance renders the director dashboard in another. Neither window is mapped to the operator's physical desktop. The mirror avoids undefined X11 backing-buffer contents from Vulkan/Unity windows.
 
 ```text
                     ┌─ observe_game / press_keys ─┐
@@ -18,7 +18,7 @@ GPT-6-Astra (Codex) ┤                              ├─ Native game in Games
 Codex JSONL + rollout usage ── Arena controller ──┼─ Director dashboard
 Game save (referee only) ─────────────────────────┘
                                                   │
-Game X11 capture + dashboard Xvfb capture ── FFmpeg hstack → recording parts
+Gamescope compositor → private game mirror + dashboard Xvfb ── FFmpeg → parts
 ```
 
 The browser is deliberately not the control plane. This avoids a lossy browser reimplementation of the game, cuts latency, and lets viewers see the unmodified native game beside an exact, read-only Codex transcript. The loopback dashboard URL remains available for an operator to open manually, but no physical browser is opened by default.
@@ -93,7 +93,9 @@ follow startup and resume logs with:
 journalctl --user -u astra-parabox-watchdog.service -f
 ```
 
-The service starts with the user systemd manager and watches the single active run. A rebooted run resumes as soon as the user's runtime directory is available; it does not wait for niri or another physical compositor. If Codex reports a quota/rate-limit error, the watchdog uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`.
+The service starts with the user systemd manager and watches the single active run. During a quota wait the recorder and active timer stop, while the hidden game/controller process remains alive; the same in-memory game state and Codex thread resume when the reset deadline passes. A normal OS suspend freezes that process and continues from the same state on wake. A reboot cannot preserve Wine/GPU RAM, so the watchdog relaunches from the durable game save and resumes the persisted Codex `thread_id`. The next recording part first holds the last compositor snapshot while the title screen is handled behind it, then switches to the restored live frame; the title page therefore appears only in the initial part. If the deadline passed while asleep or powered off, the first wake/boot poll resumes immediately. The watchdog does not wait for niri or another physical compositor.
+
+If Codex reports a quota/rate-limit error, the runner uses the exhausted window's reported reset time plus a one-minute safety margin. Five hours is only the fallback when Codex provides no usable reset timestamp; customize that fallback with `--quota-wait-hours`. While discharging at 3% or lower, it takes a save/frame snapshot, stops the timer and recording, and waits. It resumes the retained process after AC is connected or the battery rises above 3%; after an actual power loss, boot recovery uses the durable save. Plugging in power cannot itself wake hardware that the firmware leaves suspended, but the first subsequent wake resumes automatically.
 
 For boot-time startup, verify `loginctl show-user "$USER" -p Linger` reports `yes` (enable linger once if needed). The game and recorder use private virtual displays and never require a physical desktop session.
 
@@ -111,6 +113,7 @@ Defaults:
 - Shell: enabled in an empty writable workspace, with outbound network disabled
 - skills, plugins, apps, memory, and sub-agents: retained from the selected Codex home
 - quota retry: reported reset time + 1 minute; 5-hour fallback
+- low-battery pause: 3% while discharging; resume on safe battery or external power
 - crash checkpoint: cumulative time, tokens, thread ID, progress, and game save every 5 seconds
 
 Useful variants:
@@ -131,8 +134,10 @@ node dist/src/cli.js restore runs/<run-id>/save-recovery.json
 The default background `run` is independent of its launching terminal. The
 diagnostic `run --foreground` variant remains attached, and `Ctrl+C` pauses that
 variant for manual inspection. `SIGTERM`, an unexpected runner death, or a
-reboot leaves the challenge eligible for automatic restart. The active
-challenge timer excludes quota/reboot downtime and resumes from its checkpoint;
+reboot leaves the challenge eligible for automatic restart. Every recording
+part uses regenerated frame-count timestamps, so suspend gaps do not inflate its
+duration and ordered parts are directly concatenable. The active challenge
+timer excludes quota, power, suspend, and reboot downtime and resumes from its checkpoint;
 the final summary also reports total wall time, inactive time, attempt count,
 and whether the run was `continuous` or `resumed`.
 

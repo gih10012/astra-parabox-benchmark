@@ -7,11 +7,16 @@ import { runCommand } from "./command.js";
 const GAME_WIDTH = 1280;
 const VIDEO_HEIGHT = 1080;
 const DASHBOARD_WIDTH = 640;
+const CHROME_APP_INSET = 8;
 
 export interface VirtualGameRuntime {
   display: string;
   gamescopeDisplay: string;
   keypressCommand: string;
+  compositorScreenshot: {
+    command: string;
+    environment: NodeJS.ProcessEnv;
+  };
   close(): Promise<void>;
 }
 
@@ -19,6 +24,8 @@ export interface VirtualDashboardRuntime {
   display: string;
   close(): Promise<void>;
 }
+
+export type VirtualGameMirrorRuntime = VirtualDashboardRuntime;
 
 export async function startVirtualGame(options: {
   rootDirectory: string;
@@ -32,6 +39,11 @@ export async function startVirtualGame(options: {
   );
   const gamescopeCtl = path.join(path.dirname(gamescope), "gamescopectl");
   await access(gamescopeCtl);
+  const xvfb = await resolveTool(
+    "Xvfb",
+    process.env.ASTRA_XVFB,
+    path.join(options.rootDirectory, ".arena/tools/xvfb-root/usr/bin/Xvfb"),
+  );
   const proton = await resolveProton();
   const keypressCommand = await ensureKeypressHelper(options.rootDirectory);
   const environmentFile = path.join(options.runtimeDirectory, "headless-environment.json");
@@ -110,14 +122,38 @@ export async function startVirtualGame(options: {
         "Steam is already running. Close it before a headless challenge so it cannot forward the game to the physical desktop.",
       );
     }
-    const steamProcess = spawn("steam", ["-silent"], {
-      env: childEnvironment,
+    const steamDisplay = await freeXDisplay(170, 199);
+    const steamXvfbProcess = spawn(
+      xvfb,
+      [steamDisplay, "-screen", "0", "1024x768x24", "-br", "-nolisten", "tcp", "-noreset"],
+      { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    logChildOutput(
+      steamXvfbProcess,
+      path.join(options.runtimeDirectory, "steam-xvfb.log"),
+    );
+    childProcesses.push(steamXvfbProcess);
+    await waitForXDisplay(steamDisplay, steamXvfbProcess, 15_000);
+    const steamEnvironment: NodeJS.ProcessEnv = {
+      ...childEnvironment,
+      DISPLAY: steamDisplay,
+    };
+    delete steamEnvironment.WAYLAND_DISPLAY;
+    delete steamEnvironment.GAMESCOPE_WAYLAND_DISPLAY;
+    const steamProcess = spawn("steam", [
+      "-inhibitbootstrap",
+      "-skipinitialbootstrap",
+      "-nobootstrapperupdate",
+      "-noverifyfiles",
+      "-silent",
+    ], {
+      env: steamEnvironment,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     logChildOutput(steamProcess, path.join(options.runtimeDirectory, "steam.log"));
     childProcesses.push(steamProcess);
-    await delay(15_000);
+    await waitForSteamReady(steamProcess, 30 * 60_000);
 
     const steamRoot = path.join(process.env.HOME ?? "", ".local/share/Steam");
     const gameProcess = spawn(
@@ -148,11 +184,15 @@ export async function startVirtualGame(options: {
       display,
       gamescopeDisplay,
       keypressCommand,
+      compositorScreenshot: {
+        command: gamescopeCtl,
+        environment: childEnvironment,
+      },
       close: async () => {
         stopProcessGroup(gameProcess, "SIGTERM");
         await delay(500);
         await runCommand("steam", ["-shutdown"], {
-          env: childEnvironment,
+          env: steamEnvironment,
           timeoutMs: 5_000,
         }).catch(() => undefined);
         stopProcessGroup(steamProcess, "SIGTERM");
@@ -209,6 +249,8 @@ export async function startVirtualDashboard(options: {
         "--disable-component-update",
         "--disable-background-networking",
         "--disable-default-apps",
+        "--disable-extensions",
+        "--hide-scrollbars",
         "--disable-sync",
         "--disable-translate",
         "--disable-features=Translate,TranslateUI,OptimizationHints,MediaRouter,PushMessaging",
@@ -248,9 +290,75 @@ export async function startVirtualDashboard(options: {
   }
 }
 
+export async function startVirtualGameMirror(options: {
+  rootDirectory: string;
+  runtimeDirectory: string;
+  url: string;
+}): Promise<VirtualGameMirrorRuntime> {
+  const xvfb = await resolveTool(
+    "Xvfb",
+    process.env.ASTRA_XVFB,
+    path.join(options.rootDirectory, ".arena/tools/xvfb-root/usr/bin/Xvfb"),
+  );
+  const display = await freeXDisplay(130, 169);
+  const xvfbProcess = spawn(
+    xvfb,
+    [display, "-screen", "0", `${GAME_WIDTH}x${VIDEO_HEIGHT}x24`, "-br", "-nolisten", "tcp", "-noreset"],
+    { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  logChildOutput(xvfbProcess, path.join(options.runtimeDirectory, "game-mirror-xvfb.log"));
+  try {
+    await waitForXDisplay(display, xvfbProcess, 15_000);
+    const environment = withoutPhysicalDisplay(process.env);
+    environment.DISPLAY = display;
+    environment.XDG_SESSION_TYPE = "x11";
+    environment.LANG = "en_US.UTF-8";
+    const chromeProcess = spawn(
+      "google-chrome-stable",
+      [
+        "--ozone-platform=x11",
+        `--user-data-dir=${path.join(options.runtimeDirectory, "game-mirror-chrome-profile")}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-session-crashed-bubble",
+        "--disable-component-update",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--hide-scrollbars",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-features=Translate,TranslateUI,OptimizationHints,MediaRouter,PushMessaging",
+        "--window-position=0,0",
+        `--window-size=${GAME_WIDTH},${VIDEO_HEIGHT}`,
+        `--app=${options.url}/game.html`,
+      ],
+      { env: environment, detached: true, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    logChildOutput(
+      chromeProcess,
+      path.join(options.runtimeDirectory, "game-mirror-chrome.log"),
+    );
+    await delay(2_000);
+    if (chromeProcess.exitCode !== null) throw new Error("Hidden game mirror exited early");
+    return {
+      display,
+      close: async () => {
+        stopProcessGroup(chromeProcess, "SIGTERM");
+        stopProcessGroup(xvfbProcess, "SIGTERM");
+        await delay(500);
+        stopProcessGroup(chromeProcess, "SIGKILL");
+        stopProcessGroup(xvfbProcess, "SIGKILL");
+      },
+    };
+  } catch (error) {
+    stopProcessGroup(xvfbProcess, "SIGKILL");
+    throw error;
+  }
+}
+
 export function hiddenRecorderArguments(options: {
   gameDisplay: string;
-  gameWindowId: number;
   dashboardDisplay: string;
   output: string;
 }): string[] {
@@ -263,7 +371,7 @@ export function hiddenRecorderArguments(options: {
     "-f", "x11grab",
     "-draw_mouse", "0",
     "-framerate", "30",
-    "-window_id", String(options.gameWindowId),
+    "-video_size", `${GAME_WIDTH}x${VIDEO_HEIGHT}`,
     "-i", `${options.gameDisplay}.0`,
     "-thread_queue_size", "512",
     "-f", "x11grab",
@@ -272,12 +380,13 @@ export function hiddenRecorderArguments(options: {
     "-video_size", `${DASHBOARD_WIDTH}x${VIDEO_HEIGHT}`,
     "-i", `${options.dashboardDisplay}.0`,
     "-filter_complex",
-    `[0:v]scale=${GAME_WIDTH}:${VIDEO_HEIGHT}:flags=lanczos,setsar=1[g];[1:v]scale=${DASHBOARD_WIDTH}:${VIDEO_HEIGHT}:flags=lanczos,setsar=1[d];[g][d]hstack=inputs=2[v]`,
+    `[0:v]crop=${GAME_WIDTH - CHROME_APP_INSET}:${VIDEO_HEIGHT - CHROME_APP_INSET}:${CHROME_APP_INSET}:${CHROME_APP_INSET},scale=${GAME_WIDTH}:${VIDEO_HEIGHT}:flags=lanczos,setsar=1,setpts=N/(30*TB)[g];[1:v]scale=${DASHBOARD_WIDTH}:${VIDEO_HEIGHT}:flags=lanczos,setsar=1,setpts=N/(30*TB)[d];[g][d]hstack=inputs=2:shortest=1,fps=30,setpts=N/(30*TB)[v]`,
     "-map", "[v]",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "18",
     "-pix_fmt", "yuv420p",
+    "-fps_mode", "cfr",
     "-f", "matroska",
     options.output,
   ];
@@ -304,6 +413,22 @@ async function ensureKeypressHelper(rootDirectory: string): Promise<string> {
     }
   }
   return output;
+}
+
+async function waitForSteamReady(
+  steamProcess: ChildProcess,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (steamProcess.exitCode !== null) {
+      throw new Error(`Steam exited before becoming ready (${steamProcess.exitCode})`);
+    }
+    const webHelper = await runCommand("pgrep", ["-f", "/steamwebhelper"]);
+    if (webHelper.code === 0) return;
+    await delay(1_000);
+  }
+  throw new Error("Steam did not become ready within 30 minutes");
 }
 
 async function resolveTool(

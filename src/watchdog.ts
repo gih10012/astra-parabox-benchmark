@@ -10,6 +10,11 @@ import {
   processMatches,
   readActiveRun,
 } from "./run-checkpoint.js";
+import {
+  powerAllowsResume,
+  readPowerState,
+  shouldSnapshotForLowBattery,
+} from "./power.js";
 
 const SERVICE_NAME = "astra-parabox-watchdog.service";
 const sessionVariables = [
@@ -75,10 +80,27 @@ export async function runWatchdog(
         continue;
       }
       if (
-        (checkpoint.phase === "running" || checkpoint.phase === "starting") &&
         checkpoint.pid !== null &&
         processMatches(checkpoint.pid, checkpoint.pidStartTicks)
       ) {
+        await wait(pollMs);
+        continue;
+      }
+      const power = await readPowerState();
+      if (shouldSnapshotForLowBattery(power)) {
+        if (checkpoint.phase !== "waiting_power") {
+          checkpoint = await store.update({
+            phase: "waiting_power",
+            pid: null,
+            pidStartTicks: null,
+            retryAt: null,
+            reason: `Battery at ${power.batteryPercent}%; waiting for external power`,
+          });
+        }
+        await wait(pollMs);
+        continue;
+      }
+      if (checkpoint.phase === "waiting_power" && !powerAllowsResume(power)) {
         await wait(pollMs);
         continue;
       }
@@ -95,7 +117,7 @@ export async function runWatchdog(
       const retryTime = checkpoint.retryAt
         ? Date.parse(checkpoint.retryAt)
         : Date.now();
-      if (Number.isFinite(retryTime) && retryTime > Date.now()) {
+      if (!retryIsDue(checkpoint.retryAt)) {
         await wait(Math.min(pollMs, retryTime - Date.now()));
         continue;
       }
@@ -126,6 +148,15 @@ export async function runWatchdog(
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
   }
+}
+
+export function retryIsDue(
+  retryAt: string | null,
+  nowMs = Date.now(),
+): boolean {
+  if (!retryAt) return true;
+  const retryTime = Date.parse(retryAt);
+  return !Number.isFinite(retryTime) || retryTime <= nowMs;
 }
 
 export async function installWatchdogService(

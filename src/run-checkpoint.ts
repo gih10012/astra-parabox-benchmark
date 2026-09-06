@@ -10,6 +10,7 @@ export type RunPhase =
   | "starting"
   | "running"
   | "waiting_quota"
+  | "waiting_power"
   | "waiting_retry"
   | "paused"
   | "completed"

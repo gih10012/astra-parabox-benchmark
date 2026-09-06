@@ -17,7 +17,7 @@ import {
 export class ChallengeState extends EventEmitter {
   readonly model: string;
   readonly targetLevels: number;
-  readonly attempt: number;
+  attempt: number;
   #runId: string | null = null;
   #status: ChallengeStatus = "idle";
   #startedAtWall: number | null = null;
@@ -102,6 +102,36 @@ export class ChallengeState extends EventEmitter {
 
   stop(): void {
     this.finish("stopped");
+  }
+
+  pause(
+    nowWall = Date.now(),
+    nowMono = process.hrtime.bigint(),
+  ): void {
+    if (this.#status !== "running" || this.#startedAtMono === null) return;
+    this.#elapsedBeforeMs +=
+      Number(nowMono - this.#startedAtMono) / 1_000_000;
+    this.#startedAtMono = null;
+    this.#endedAtMono = null;
+    this.#endedAtWall = nowWall;
+    this.#status = "stopped";
+    this.emit("change", this.snapshot());
+  }
+
+  resume(
+    attempt: number,
+    nowWall = Date.now(),
+    nowMono = process.hrtime.bigint(),
+  ): void {
+    if (this.#status !== "stopped") {
+      throw new Error("Challenge is not paused");
+    }
+    this.attempt = attempt;
+    this.#status = "running";
+    this.#startedAtMono = nowMono;
+    this.#endedAtMono = null;
+    this.#endedAtWall = null;
+    this.emit("change", this.snapshot());
   }
 
   finish(status: Exclude<ChallengeStatus, "idle" | "running">): void {
