@@ -86,3 +86,49 @@ test("serves a durable holding frame before the live game is restored", async (c
   controller.publishFrame({ ...holdingFrame, data: liveData, sha256: "live-frame" });
   assert.equal(await fetch(`${url}/api/frame`).then((response) => response.text()), "restored-live-frame");
 });
+
+test("cancels a long captured key sequence at the next key boundary", async (context) => {
+  const webRoot = await mkdtemp(path.join(os.tmpdir(), "arena-web-"));
+  await Promise.all([
+    writeFile(path.join(webRoot, "index.html"), "ok"),
+    writeFile(path.join(webRoot, "app.js"), ""),
+    writeFile(path.join(webRoot, "styles.css"), ""),
+    writeFile(path.join(webRoot, "game.html"), ""),
+    writeFile(path.join(webRoot, "game.js"), ""),
+  ]);
+  const game = new MockGameAdapter();
+  let releaseFirstPress = () => {};
+  let markFirstPressStarted = () => {};
+  const firstPressStarted = new Promise<void>((resolve) => {
+    markFirstPressStarted = resolve;
+  });
+  game.press = async (keys) => {
+    game.presses.push([...keys]);
+    markFirstPressStarted();
+    await new Promise<void>((resolve) => {
+      releaseFirstPress = resolve;
+    });
+  };
+  const controller = new ArenaController({
+    state: new ChallengeState(),
+    game,
+    port: 0,
+    webRoot,
+  });
+  const url = await controller.listen();
+  context.after(() => controller.close());
+  const request = fetch(`${url}/internal/press`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${controller.controlToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ keys: ["UP", "LEFT", "DOWN"] }),
+  });
+  await firstPressStarted;
+  controller.cancelPendingActions();
+  releaseFirstPress();
+
+  assert.equal((await request).status, 500);
+  assert.deepEqual(game.presses, [["UP"]]);
+});

@@ -380,7 +380,17 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
     }
   };
   const stopCodex = () => {
-    if (codex?.exitCode === null) codex.kill("SIGINT");
+    const activeCodex = codex;
+    if (activeCodex?.exitCode !== null || !activeCodex.pid) return;
+    signalProcessGroup(activeCodex, "SIGINT");
+    const terminate = setTimeout(() => {
+      if (activeCodex.exitCode === null) signalProcessGroup(activeCodex, "SIGTERM");
+    }, 2_000);
+    const kill = setTimeout(() => {
+      if (activeCodex.exitCode === null) signalProcessGroup(activeCodex, "SIGKILL");
+    }, 5_000);
+    terminate.unref();
+    kill.unref();
   };
   const checkPower = async () => {
     if (powerCheckBusy) return;
@@ -407,10 +417,12 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
   };
   const onInterrupt = () => {
     requestedStop = "pause";
+    controller?.cancelPendingActions();
     stopCodex();
   };
   const onTerminate = () => {
     requestedStop = "restart";
+    controller?.cancelPendingActions();
     stopCodex();
   };
   process.once("SIGINT", onInterrupt);
@@ -610,6 +622,7 @@ async function runAttempt(checkpointStore: CheckpointStore): Promise<RunOutcome>
           codex = spawn(CODEX_COMMAND, args, {
             cwd: workDirectory,
             env: codexEnvironment(codexHome),
+            detached: true,
             stdio: ["ignore", "pipe", "pipe"],
           });
           const activeCodex = codex;
@@ -1157,4 +1170,20 @@ function retryDelayMs(attempt: number): number {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function signalProcessGroup(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // The Codex process has already exited.
+    }
+  }
 }

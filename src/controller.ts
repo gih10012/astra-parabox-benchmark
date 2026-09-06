@@ -40,6 +40,7 @@ export class ArenaController {
   #clients = new Set<ServerResponse>();
   #frame: GameFrame | null = null;
   #transcriptSequence = 0;
+  #actionEpoch = 0;
 
   constructor(options: ControllerOptions) {
     this.state = options.state;
@@ -113,6 +114,10 @@ export class ArenaController {
     });
   }
 
+  cancelPendingActions(): void {
+    this.#actionEpoch += 1;
+  }
+
   broadcast(name: string, data: unknown): void {
     const payload = `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of this.#clients) client.write(payload);
@@ -182,8 +187,12 @@ export class ArenaController {
       const intervalMs = boundedInteger(body.intervalMs, 0, 1_000, 55);
       const settleMs = boundedInteger(body.settleMs, 0, 2_000, 100);
       const capture = body.capture !== false;
+      const actionEpoch = this.#actionEpoch;
       if (capture) {
         for (let index = 0; index < keys.length; index++) {
+          if (actionEpoch !== this.#actionEpoch) {
+            throw new Error("game action cancelled");
+          }
           await this.game.press([keys[index]!], {
             intervalMs: 0,
             settleMs: index + 1 === keys.length ? settleMs : intervalMs,

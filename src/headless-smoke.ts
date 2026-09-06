@@ -135,7 +135,7 @@ export async function runHeadlessSmoke(rootDirectory: string): Promise<{
         sha256: before.sha256,
       },
       after: {
-        filename: path.join(frameDirectory, "00000002.jpg"),
+        filename: path.join(frameDirectory, "00000003.jpg"),
         sha256: after.sha256,
       },
       recording: {
